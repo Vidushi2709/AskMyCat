@@ -1,0 +1,9 @@
+# Ignore local ChromaDB storage
+collections/
+chroma_db/
+
+# Ignore dataset files
+data/
+
+# Checkpoints
+scorer.ckpt
