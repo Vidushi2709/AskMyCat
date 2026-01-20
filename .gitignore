@@ -6,4 +6,12 @@ chroma_db/
 data/
 
 # Checkpoints
-scorer.ckpt
+checkpoints/
+
+# pycache
+__pycache__/
+
+# env
+.env
+
+cache/

@@ -57,12 +57,26 @@ def load_dataset(path: str) -> List[Dict[str, Any]]:
             })
     return rows
 
+def chunk_passage(text: str, chunk_size: int = 512, overlap_size: int = 128):
+    """Split text into overlapping chunks."""
+    if not text:
+        return []
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunk_stripped = chunk.strip()
+        if chunk_stripped:  # Only add non-empty chunks
+            chunks.append(chunk_stripped)
+        # Move forward by (chunk_size - overlap) for sliding window
+        start += chunk_size - overlap_size
+    return chunks
 
 def build_id(row: Dict[str, Any]) -> str:
-    """Prefer provided id; else deterministic hash of passage."""
-    if row.get("id"):
-        return str(row["id"])  # ensure string
-    return hashlib.sha1((row.get("exp") or "").encode("utf-8")).hexdigest()
+    base_id = row.get("id") or hashlib.sha1((row.get("exp") or "").encode("utf-8")).hexdigest()
+    chunk_idx = row.get("chunk_idx", 0)
+    return f"{base_id}_chunk_{chunk_idx}"
 
 
 def embed_passages(rows: List[Dict[str, Any]], model_name: str, batch_size: int, device: str):
@@ -99,12 +113,13 @@ def ingest_chroma(client: PersistentClient, rows: List[Dict[str, Any]], vectors,
 
         ids = [build_id(r) for r in batch_rows]
         documents = [r["exp"] for r in batch_rows]
+        # Metadata: DON'T include "exp" (passage), just reference fields
         metadatas = [{
             "question": r.get("question", ""),
-            "exp": r.get("exp", ""),
             "subject_name": r.get("subject_name", ""),
             "topic_name": r.get("topic_name", ""),
             "id": r.get("id", ""),
+            "chunk_idx": r.get("chunk_idx", 0),
             "source": "data/train",
         } for r in batch_rows]
 
@@ -115,14 +130,31 @@ def ingest_chroma(client: PersistentClient, rows: List[Dict[str, Any]], vectors,
             embeddings=list(batch_vecs),
         )
 
+def prepare_chunked_data(rows: List[Dict[str, Any]], chunk_size: int = 512, overlap: int = 128) -> List[Dict[str, Any]]:
+    """Create overlapping chunks from passages, preserving metadata."""
+    chunked_rows = []
+    for row in rows: 
+        chunks = chunk_passage(row['exp'], chunk_size=chunk_size, overlap_size=overlap)
+        for chunk_idx, chunk_text in enumerate(chunks):
+            chunked_rows.append({
+                "question": row.get("question", ""),
+                "exp": chunk_text,
+                "subject_name": row.get("subject_name", ""),
+                "topic_name": row.get("topic_name", ""),
+                "id": row.get("id", ""),
+                "chunk_idx": chunk_idx,
+            })
+    return chunked_rows
 
 def main():
-    ap = argparse.ArgumentParser(description="Embed data/train and store in a local Chroma collection")
+    ap = argparse.ArgumentParser(description="Embed chunked data/train and store in a local Chroma collection")
     ap.add_argument("--data", default="data/train.json", help="Path to JSON/JSONL file")
     ap.add_argument("--chroma_path", default="./collections/ebm", help="Folder for persistent ChromaDB")
     ap.add_argument("--collection", default="ebm_passages", help="Collection name")
     ap.add_argument("--model", default="sentence-transformers/all-MiniLM-L6-v2", help="SentenceTransformer model")
     ap.add_argument("--batch", type=int, default=128, help="Embedding batch size")
+    ap.add_argument("--chunk_size", type=int, default=512, help="Chunk size in characters")
+    ap.add_argument("--overlap", type=int, default=128, help="Overlap between chunks")
     ap.add_argument("--device", default="cuda", help="Device to use: cuda or cpu (default: cuda)")
     args = ap.parse_args()
 
@@ -133,16 +165,20 @@ def main():
         return
     print(f"Loaded {len(rows)} rows")
 
-    print(f"Embedding with {args.model} on {args.device} ...")
-    vectors = embed_passages(rows, args.model, args.batch, args.device)
+    print(f"Chunking passages (chunk_size={args.chunk_size}, overlap={args.overlap}) ...")
+    chunked_rows = prepare_chunked_data(rows, args.chunk_size, args.overlap)
+    print(f"Created {len(chunked_rows)} chunks from {len(rows)} passages")
 
+    print(f"Embedding with {args.model} on {args.device} ...")
+    vectors = embed_passages(chunked_rows, args.model, args.batch, args.device)
+    
     print(f"Connecting to Chroma at {args.chroma_path} ...")
     client = connect_chroma(args.chroma_path)
 
     print(f"Ingesting into collection '{args.collection}' ...")
-    ingest_chroma(client, rows, vectors, args.collection, batch_size=512)
+    ingest_chroma(client, chunked_rows, vectors, args.collection, batch_size=512)
 
-    print("✓ Done.")
+    print(" Done.")
 
 
 if __name__ == "__main__":
