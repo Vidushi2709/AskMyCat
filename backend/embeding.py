@@ -3,12 +3,21 @@ import json
 import argparse
 import hashlib
 from typing import List, Dict, Any
+import sys
+from pathlib import Path
 
 from tqdm import tqdm
 
 import chromadb
 from chromadb import PersistentClient
 from sentence_transformers import SentenceTransformer
+
+# Add parent directory to path to import config
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import (
+    TRAIN_DATA, CHROMA_PATH, CHROMA_COLLECTION_NAME,
+    EMBEDDING_MODEL, CHUNK_SIZE, OVERLAP, EMBEDDING_BATCH_SIZE
+)
 
 
 def load_dataset(path: str) -> List[Dict[str, Any]]:
@@ -148,13 +157,13 @@ def prepare_chunked_data(rows: List[Dict[str, Any]], chunk_size: int = 512, over
 
 def main():
     ap = argparse.ArgumentParser(description="Embed chunked data/train and store in a local Chroma collection")
-    ap.add_argument("--data", default="data/train.json", help="Path to JSON/JSONL file")
-    ap.add_argument("--chroma_path", default="./collections/ebm", help="Folder for persistent ChromaDB")
-    ap.add_argument("--collection", default="ebm_passages", help="Collection name")
-    ap.add_argument("--model", default="sentence-transformers/all-MiniLM-L6-v2", help="SentenceTransformer model")
-    ap.add_argument("--batch", type=int, default=128, help="Embedding batch size")
-    ap.add_argument("--chunk_size", type=int, default=512, help="Chunk size in characters")
-    ap.add_argument("--overlap", type=int, default=128, help="Overlap between chunks")
+    ap.add_argument("--data", default=str(TRAIN_DATA), help="Path to JSON/JSONL file")
+    ap.add_argument("--chroma_path", default=str(CHROMA_PATH), help="Folder for persistent ChromaDB")
+    ap.add_argument("--collection", default=CHROMA_COLLECTION_NAME, help="Collection name")
+    ap.add_argument("--model", default=EMBEDDING_MODEL, help="SentenceTransformer model")
+    ap.add_argument("--batch", type=int, default=EMBEDDING_BATCH_SIZE, help="Embedding batch size")
+    ap.add_argument("--chunk_size", type=int, default=CHUNK_SIZE, help="Chunk size in characters")
+    ap.add_argument("--overlap", type=int, default=OVERLAP, help="Overlap between chunks")
     ap.add_argument("--device", default="cuda", help="Device to use: cuda or cpu (default: cuda)")
     args = ap.parse_args()
 
