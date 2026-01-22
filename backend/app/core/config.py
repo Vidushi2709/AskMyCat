@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     DESCRIPTION: str = "Evidence-Based Medicine Retrieval-Augmented Generation System"
     
     # CORS Settings
-    BACKEND_CORS_ORIGINS: list = ["http://localhost:3000", "http://localhost:8501", "http://localhost:8502"]
+    BACKEND_CORS_ORIGINS: list = ["http://localhost:3000", "http://localhost:3001", "http://localhost:8501", "http://localhost:8502"]
     
     # Model Settings
     DEVICE: str = "cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu"

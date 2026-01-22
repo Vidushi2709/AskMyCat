@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Tuple
 from chromadb import PersistentClient
 import torch
 import torch.nn as nn
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, pipeline
 import torch.nn.functional as F
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -14,14 +14,14 @@ from diskcache import Cache
 from datetime import datetime
 import sys
 from pathlib import Path
-import threading
 import logging
+import requests
 
 # Add parent directory to path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     CHROMA_PATH, CHROMA_COLLECTION_NAME, MODEL_NAME,
-    RANKING_SCORER_CKPT, CACHE_DIR
+    RANKING_SCORER_CKPT, VERIFICATION_SCORER_CKPT, CACHE_DIR
 )
 
 # Load environment variables from .env
@@ -30,6 +30,66 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# PubMed API endpoints
+PUBMED_SEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_FETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+def pubmed_search(query, max_results=5, years=2):
+    """Search PubMed for recent articles matching the query."""
+    current_year = datetime.now().year
+    params = {
+        "db": "pubmed",
+        "term": query,
+        "retmode": "json",
+        "retmax": max_results,
+        "mindate": current_year - years,
+        "maxdate": current_year
+    }
+    r = requests.get(PUBMED_SEARCH, params=params, timeout=10)
+    r.raise_for_status()
+    ids = r.json()["esearchresult"]["idlist"]
+    return ids
+
+def pubmed_fetch_abstracts(ids):
+    """Fetch abstracts for given PubMed IDs."""
+    if not ids:
+        return []
+    
+    params = {
+        "db": "pubmed",
+        "id": ",".join(ids),
+        "retmode": "xml",
+        "rettype": "abstract"
+    }
+    r = requests.get(PUBMED_FETCH, params=params, timeout=15)
+    r.raise_for_status()
+    
+    # Parse XML to extract abstracts (simplified)
+    from xml.etree import ElementTree as ET
+    root = ET.fromstring(r.text)
+    
+    abstracts = []
+    for article in root.findall(".//PubmedArticle"):
+        title_elem = article.find(".//ArticleTitle")
+        abstract_elem = article.find(".//AbstractText")
+        
+        title = title_elem.text if title_elem is not None else "No title"
+        abstract = abstract_elem.text if abstract_elem is not None else "No abstract"
+        
+        # Get PMID
+        pmid_elem = article.find(".//PMID")
+        pmid = pmid_elem.text if pmid_elem is not None else "Unknown"
+        
+        abstracts.append({
+            "pmid": pmid,
+            "title": title,
+            "abstract": abstract,
+            "source": "PubMed",
+            "year": datetime.now().year  # Approximate
+        })
+    
+    return abstracts
 
 # Ranking model (from train.ipynb)
 class RankingScorer(nn.Module):
@@ -64,65 +124,84 @@ class RetrievalPipeline:
                  collection_name: str = None,
                  model_name: str = None,
                  checkpoint_path: str = None,
-                 device: str = "cuda",
+                 verification_checkpoint_path: str = None,
+                 device: str = None,
                  llm_api_key: str = None,
                  enable_cache: bool = True,
                  cache_dir: str = None):
-            # Use config defaults if not provided
-            chroma_path = chroma_path or str(CHROMA_PATH)
-            collection_name = collection_name or CHROMA_COLLECTION_NAME
-            model_name = model_name or MODEL_NAME
-            checkpoint_path = checkpoint_path or str(RANKING_SCORER_CKPT)
-            cache_dir = cache_dir or str(CACHE_DIR)
-            
+        # Use config MODEL_NAME by default
+        model_name = model_name or MODEL_NAME
+        
+        # Use config defaults if not provided
+        chroma_path = chroma_path or str(CHROMA_PATH)
+        collection_name = collection_name or CHROMA_COLLECTION_NAME
+        checkpoint_path = checkpoint_path or str(RANKING_SCORER_CKPT)
+        verification_checkpoint_path = verification_checkpoint_path or str(VERIFICATION_SCORER_CKPT)
+        cache_dir = cache_dir or str(CACHE_DIR)
+        
+        # Set device
+        if device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
             self.device = device
-            self.enable_cache = enable_cache
-            
-            # Initialize cache (retrieval + LLM only)
-            if enable_cache:
-                # Cache with size limit (1GB) and LRU eviction policy
-                self.cache = Cache(cache_dir, 
-                                   size_limit=int(1e9),  # 1GB max
-                                   eviction_policy='least-recently-used')
-                # Set TTL for cache entries (7 days in seconds)
-                self.cache_ttl = 7 * 24 * 60 * 60
-                self.cache_stats = {
-                    "retrieval_hits": 0,
-                    "retrieval_misses": 0,
-                    "llm_hits": 0,
-                    "llm_misses": 0,
-                }
-                logger.info("Cache enabled: Retrieval + LLM (1GB max, 7-day TTL)")
-            else:
-                self.cache = None
-                self.cache_ttl = None
-            
-            # Chroma client
-            self.client = PersistentClient(path=chroma_path)
-            try:
-                self.collection = self.client.get_collection(collection_name)
-                logger.info("Loaded existing collection")
-            except Exception as e:
-                raise ValueError(f"Collection '{collection_name}' not found in ChromaDB at {chroma_path}. Please ingest data first.") from e
-            
-            # Initialize tokenizer and encoder
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            encoder = AutoModel.from_pretrained(model_name)
-            
-            # Load ranking scorer
-            self.ranking_model = RankingScorer(encoder, embedding_dim=128).to(device)
-            # Use weights_only=True to avoid loading arbitrary pickled objects
-            self.ranking_model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
-            self.ranking_model.eval()
-            logger.info(f"Loaded ranking model from {checkpoint_path}")
-            
-            # Initialize LLM (OpenRouter)
-            api_key = llm_api_key or os.getenv("API_KEY")
-            if not api_key:
-                raise ValueError("API_KEY not found in .env file or passed as argument")
-            base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-            self.llm_client = OpenAI(api_key=api_key, base_url=base_url)
-            logger.info(f"Connected to LLM via OpenRouter ({base_url})")
+        self.enable_cache = enable_cache
+        
+        # Initialize cache (retrieval + LLM only)
+        if enable_cache:
+            # Cache with size limit (1GB) and LRU eviction policy
+            self.cache = Cache(cache_dir, 
+                               size_limit=int(1e9),  # 1GB max
+                               eviction_policy='least-recently-used')
+            # Set TTL for cache entries (7 days in seconds)
+            self.cache_ttl = 7 * 24 * 60 * 60
+            self.cache_stats = {
+                "retrieval_hits": 0,
+                "retrieval_misses": 0,
+                "llm_hits": 0,
+                "llm_misses": 0,
+            }
+            logger.info("Cache enabled: Retrieval + LLM (1GB max, 7-day TTL)")
+        else:
+            self.cache = None
+            self.cache_ttl = None
+        
+        # Chroma client
+        self.client = PersistentClient(path=chroma_path)
+        try:
+            self.collection = self.client.get_collection(collection_name)
+            logger.info("Loaded existing collection")
+        except Exception as e:
+            raise ValueError(f"Collection '{collection_name}' not found in ChromaDB at {chroma_path}. Please ingest data first.") from e
+        
+        # Initialize tokenizer and encoder
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        encoder = AutoModel.from_pretrained(model_name)
+        
+        # Load ranking scorer
+        self.ranking_model = RankingScorer(encoder, embedding_dim=128).to(device)
+        # Use weights_only=True to avoid loading arbitrary pickled objects
+        self.ranking_model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+        self.ranking_model.eval()
+        logger.info(f"Loaded ranking model from {checkpoint_path}")
+        
+        # Load verification scorer (separate model for verification)
+        self.verification_model = RankingScorer(encoder, embedding_dim=128).to(device)
+        self.verification_model.load_state_dict(torch.load(verification_checkpoint_path, map_location=device, weights_only=True))
+        self.verification_model.eval()
+        logger.info(f"Loaded verification model from {verification_checkpoint_path}")
+        
+        # Initialize NLI pipeline for evidence verification
+        nli_device = 0 if torch.cuda.is_available() else -1
+        self.nli_pipeline = pipeline("text-classification", model="roberta-large-mnli", device=nli_device)
+        logger.info("Loaded NLI model for evidence verification")
+        
+        # Initialize LLM (OpenRouter)
+        api_key = llm_api_key or os.getenv("API_KEY")
+        if not api_key:
+            raise ValueError("API_KEY not found in .env file or passed as argument")
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        self.llm_client = OpenAI(api_key=api_key, base_url=base_url)
+        logger.info(f"Connected to LLM via OpenRouter ({base_url})")
     
     def _get_cache_key(self, *args, **kwargs) -> str:
         """Generate cache key from arguments."""
@@ -178,68 +257,79 @@ class RetrievalPipeline:
         return result
     
     def rerank_passages(self, query: str, passages: List[str], metadatas: List[Dict[str, Any]],
-                       max_len: int = 128, batch_size: int = 32, timeout: int = 30) -> List[Tuple[str, Dict, float]]:
-        """Rerank passages using the trained ranking model with timeout protection."""
-        result_container = {"ranked": None, "error": None}
+                       max_len: int = 128, batch_size: int = 32) -> List[Tuple[str, Dict, float]]:
+        """Rerank passages using the trained ranking model."""
+        scores = []
         
-        def rerank_worker():
-            """Worker thread that performs reranking."""
-            try:
-                scores = []
+        device_type = "cuda" if torch.cuda.is_available() else "cpu"
+        with torch.no_grad(), torch.autocast(device_type=device_type):
+            # Encode query
+            enc_query = self.tokenizer(
+                query,
+                truncation=True,
+                padding="max_length",
+                max_length=max_len,
+                return_tensors="pt"
+            )
+            enc_query = {k: v.to(self.device) for k, v in enc_query.items()}
+            query_embedding = self.ranking_model(enc_query)  # [1, embedding_dim]
+            
+            # Process passages in batches
+            for i in range(0, len(passages), batch_size):
+                batch_passages = passages[i:i + batch_size]
+                enc_passages = self.tokenizer(
+                    batch_passages,
+                    truncation=True,
+                    padding="max_length",
+                    max_length=max_len,
+                    return_tensors="pt"
+                )
+                enc_passages = {k: v.to(self.device) for k, v in enc_passages.items()}
+                passage_embeddings = self.ranking_model(enc_passages)  # [batch_size, embedding_dim]
                 
-                device_type = "cuda" if torch.cuda.is_available() else "cpu"
-                with torch.no_grad(), torch.autocast(device_type=device_type):
-                    # Encode query
-                    enc_query = self.tokenizer(
-                        query,
-                        truncation=True,
-                        padding="max_length",
-                        max_length=max_len,
-                        return_tensors="pt"
-                    )
-                    enc_query = {k: v.to(self.device) for k, v in enc_query.items()}
-                    query_embedding = self.ranking_model(enc_query)  # [1, embedding_dim]
-                    
-                    # Process passages in batches
-                    for i in range(0, len(passages), batch_size):
-                        batch_passages = passages[i:i + batch_size]
-                        enc_passages = self.tokenizer(
-                            batch_passages,
-                            truncation=True,
-                            padding="max_length",
-                            max_length=max_len,
-                            return_tensors="pt"
-                        )
-                        enc_passages = {k: v.to(self.device) for k, v in enc_passages.items()}
-                        passage_embeddings = self.ranking_model(enc_passages)  # [batch_size, embedding_dim]
-                        
-                        sims = F.cosine_similarity(query_embedding, passage_embeddings)  # [batch_size]
-                        scores.extend(sims.detach().cpu().tolist())
-                
-                result_container["ranked"] = sorted(zip(passages, metadatas, scores), key=lambda x: x[2], reverse=True)
-            except Exception as e:
-                result_container["error"] = e
+                sims = F.cosine_similarity(query_embedding, passage_embeddings)  # [batch_size]
+                scores.extend(sims.detach().cpu().tolist())
         
-        # Run reranking in a thread with timeout
-        worker_thread = threading.Thread(target=rerank_worker, daemon=True)
-        worker_thread.start()
-        worker_thread.join(timeout=timeout)
-        
-        # Check if thread is still alive (timeout occurred)
-        if worker_thread.is_alive():
-            raise TimeoutError(f"Reranking took longer than {timeout} seconds for {len(passages)} passages")
-        
-        # Check for errors that occurred in the worker thread
-        if result_container["error"] is not None:
-            raise result_container["error"]
-        
-        return result_container["ranked"]
+        return sorted(zip(passages, metadatas, scores), key=lambda x: x[2], reverse=True)
     
     def filter_by_threshold(self, ranked_passages: List[Tuple[str, Dict, float]], 
-                           threshold: float = 0.5) -> List[Tuple[str, Dict, float]]:
+                           threshold: float = 0.6) -> List[Tuple[str, Dict, float]]:
         
         filtered = [p for p in ranked_passages if p[2] >= threshold]
         return filtered
+    
+    def filter_by_medical_keyword(self, ranked_passages: List[Tuple[str, Dict, float]], 
+                                 user_query: str) -> List[Tuple[str, Dict, float]]:
+        """
+        Filter passages to ensure they contain medical keywords from the query.
+        This helps ensure relevance for medical queries.
+        """
+        if not ranked_passages:
+            return ranked_passages
+            
+        # Extract keywords from query (simple tokenization)
+        query_words = set(user_query.lower().split())
+        
+        # Common medical terms to boost
+        medical_terms = {
+            'hypertension', 'blood', 'pressure', 'heart', 'cardiac', 'stroke', 
+            'kidney', 'renal', 'diabetes', 'cancer', 'treatment', 'symptoms',
+            'diagnosis', 'therapy', 'medication', 'drug', 'clinical', 'trial',
+            'evidence', 'study', 'research', 'patient', 'disease', 'condition'
+        }
+        
+        # Combine query words with medical terms
+        relevant_terms = query_words.union(medical_terms)
+        
+        filtered = []
+        for passage, meta, score in ranked_passages:
+            passage_lower = passage.lower()
+            # Check if passage contains at least one relevant term
+            if any(term in passage_lower for term in relevant_terms):
+                filtered.append((passage, meta, score))
+        
+        # If no passages match, return original (don't filter everything out)
+        return filtered if filtered else ranked_passages
     
     def prepare_for_llm(self, filtered_passages: List[Tuple[str, Dict, float]]) -> str:
         if not filtered_passages:
@@ -454,7 +544,7 @@ class RetrievalPipeline:
     
     # verify each evidence with answer 
     def verify_evidence_chain(self, answer: str, filtered_passages: List[Tuple[str, Dict, float]],
-                             min_similarity: float = 0.6) -> Dict[str, Any]:
+                             min_entailment_score: float = 0.6) -> Dict[str, Any]:
         logger.info(" Verifying evidence chain...")
         
         if not answer or not filtered_passages:
@@ -486,51 +576,33 @@ class RetrievalPipeline:
         
         logger.info(f"Analyzing {len(sentences)} sentences against {len(filtered_passages)} evidence passages")
         
-        # Helper function to encode text
-        def encode_text(text: str, max_len: int = 128):
-            """Encode text using the ranking model."""
-            with torch.no_grad():
-                enc = self.tokenizer(
-                    text,
-                    truncation=True,
-                    padding="max_length",
-                    max_length=max_len,
-                    return_tensors="pt"
-                )
-                enc = {k: v.to(self.device) for k, v in enc.items()}
-                embedding = self.ranking_model(enc)  # [1, embedding_dim]
-                return embedding.cpu().numpy()[0]  # Return as numpy array
-        
-        # Encode all passages once
+        # Get passage texts
         passage_texts = [passage for passage, _, _ in filtered_passages]
-        passage_embeddings = [encode_text(text) for text in passage_texts]
         
         verification_results = []
         verified_count = 0
         
         for sentence_idx, sentence in enumerate(sentences, 1):
-            # Encode sentence
-            sentence_emb = encode_text(sentence)
+            # Check entailment with all passages using NLI
+            entailments = []
+            for i, passage in enumerate(passage_texts):
+                # Use NLI to check if passage entails sentence
+                result = self.nli_pipeline(f"{passage} </s> {sentence}")
+                label = result[0]['label']
+                score = result[0]['score']
+                entailments.append((i, label, score))
             
-            # Calculate similarity with all passages
-            similarities = []
-            for i, passage_emb in enumerate(passage_embeddings):
-                sim_score = F.cosine_similarity(
-                    torch.tensor(sentence_emb).unsqueeze(0),
-                    torch.tensor(passage_emb).unsqueeze(0)
-                ).item()
-                similarities.append((i, sim_score))
-            
-            # Sort by similarity
-            similarities.sort(key=lambda x: x[1], reverse=True)
+            # Sort by entailment score (only consider ENTAILMENT)
+            entailments = [(i, score) for i, label, score in entailments if label == "ENTAILMENT"]
+            entailments.sort(key=lambda x: x[1], reverse=True)
             
             # Find best matching passage(s)
             supporting_passages = []
-            for passage_idx, sim_score in similarities[:3]:  # Top 3 matches
-                if sim_score >= min_similarity:
+            for passage_idx, entail_score in entailments[:3]:  # Top 3 entailments
+                if entail_score >= min_entailment_score:
                     supporting_passages.append({
                         "passage_number": passage_idx + 1,
-                        "similarity": round(sim_score, 3),
+                        "entailment_score": round(entail_score, 3),
                         "passage_preview": passage_texts[passage_idx][:150] + "...",
                         "metadata": filtered_passages[passage_idx][1]
                     })
@@ -544,7 +616,7 @@ class RetrievalPipeline:
                 "sentence_number": sentence_idx,
                 "sentence": sentence,
                 "verified": is_verified,
-                "confidence": supporting_passages[0]["similarity"] if supporting_passages else 0.0,
+                "confidence": supporting_passages[0]["entailment_score"] if supporting_passages else 0.0,
                 "supporting_passages": supporting_passages,
                 "citations": [p["passage_number"] for p in supporting_passages]
             })
@@ -558,7 +630,7 @@ class RetrievalPipeline:
             "unverified_sentences": len(sentences) - verified_count,
             "verification_rate": round(verification_rate, 3),
             "sentences": verification_results,
-            "min_similarity_threshold": min_similarity
+            "min_entailment_threshold": min_entailment_score
         }
         
         logger.info(f" Verification complete: {verified_count}/{len(sentences)} sentences verified ({verification_rate*100:.1f}%)")
@@ -605,7 +677,7 @@ class RetrievalPipeline:
         output.append(f"   Total Sentences: {total}")
         output.append(f"   Verified: {verified} ({rate*100:.1f}%)")
         output.append(f"   Unverified: {unverified}")
-        output.append(f"   Threshold: {verification_data['min_similarity_threshold']}\n")
+        output.append(f"   Threshold: {verification_data['min_entailment_threshold']}\n")
         output.append("-" * 80)
         
         # Sentence-by-sentence breakdown
@@ -958,6 +1030,31 @@ Return valid JSON only, no markdown."""
             else:
                 contradiction_data = json.loads(response_text)
             
+            # Transform conflicts to add passage indices
+            if contradiction_data.get("conflicts"):
+                for conflict in contradiction_data["conflicts"]:
+                    # Extract passage index from source_id (e.g., "Source 1" -> 0, "Source 2" -> 1)
+                    if "source_1" in conflict and "source_id" in conflict["source_1"]:
+                        source_id = conflict["source_1"]["source_id"]
+                        idx_match = re.search(r'Source (\d+)', source_id)
+                        conflict["passage1_idx"] = int(idx_match.group(1)) - 1 if idx_match else 0
+                    else:
+                        conflict["passage1_idx"] = 0
+                        
+                    if "source_2" in conflict and "source_id" in conflict["source_2"]:
+                        source_id = conflict["source_2"]["source_id"]
+                        idx_match = re.search(r'Source (\d+)', source_id)
+                        conflict["passage2_idx"] = int(idx_match.group(1)) - 1 if idx_match else 1
+                    else:
+                        conflict["passage2_idx"] = 1
+                    
+                    # Build explanation from the conflict data
+                    source1_claim = conflict.get("source_1", {}).get("claim", "N/A")
+                    source2_claim = conflict.get("source_2", {}).get("claim", "N/A")
+                    topic = conflict.get("topic", "Unknown")
+                    
+                    conflict["explanation"] = f"{topic}: '{source1_claim}' vs '{source2_claim}'"
+            
             logger.info(f"Contradiction analysis complete: {contradiction_data.get('has_contradictions', False)}")
             return contradiction_data
             
@@ -1027,7 +1124,7 @@ Return valid JSON only, no markdown."""
         
         return "\n".join(output)
     
-    def answer_query(self, user_query: str, top_k: int = 10, threshold: float = 0.5, 
+    def answer_query(self, user_query: str, top_k: int = 10, threshold: float = 0.6, 
                      use_llm: bool = True, detect_conflicts: bool = True,
                      enable_gates: bool = True,
                      gate_thresholds: Dict[str, float] = None,
@@ -1106,7 +1203,8 @@ Return valid JSON only, no markdown."""
         
         # Step 3: Filter
         filtered = self.filter_by_threshold(ranked, threshold)
-        logger.info(f"[3/5] Filtered to {len(filtered)} high-confidence passages")
+        filtered = self.filter_by_medical_keyword(filtered, user_query)
+        logger.info(f"[3/5] Filtered to {len(filtered)} high-confidence, keyword-matching passages")
         
         if enable_gates:
             gate3_result = self.gate_3_evidence_consistency(filtered, gate_thresholds["gate3"])
@@ -1143,6 +1241,46 @@ Return valid JSON only, no markdown."""
         # All gates passed - continue with normal pipeline
         if enable_gates:
             logger.info("All gates PASSED - Proceeding to LLM")
+            
+            # Calculate overall energy score
+            overall_energy = (gate_results["gate1"]["energy_score"] + 
+                            gate_results["gate2"]["energy_score"] + 
+                            gate_results["gate3"]["energy_score"]) / 3
+            logger.info(f"Overall energy score: {overall_energy:.2f}")
+            
+            # If energy is HIGH, trigger PubMed search as fallback
+            if overall_energy > 0.7:
+                logger.info("High energy detected - Triggering PubMed search for additional evidence")
+                try:
+                    pubmed_ids = pubmed_search(user_query, max_results=5, years=2)
+                    if pubmed_ids:
+                        pubmed_abstracts = pubmed_fetch_abstracts(pubmed_ids)
+                        logger.info(f"Retrieved {len(pubmed_abstracts)} PubMed abstracts")
+                        
+                        # Add PubMed abstracts to passages for reranking
+                        for abstract_data in pubmed_abstracts:
+                            passages.append(abstract_data["abstract"])
+                            metadatas.append({
+                                "source_type": "pubmed",
+                                "pmid": abstract_data["pmid"],
+                                "title": abstract_data["title"],
+                                "year": abstract_data["year"],
+                                "topic_name": "PubMed"
+                            })
+                        
+                        # Rerank again with PubMed results included
+                        ranked = self.rerank_passages(user_query, passages, metadatas)
+                        filtered = self.filter_by_threshold(ranked, threshold)
+                        filtered = self.filter_by_medical_keyword(filtered, user_query)
+                        logger.info(f"After PubMed integration: {len(filtered)} total filtered passages")
+                    else:
+                        logger.info("No PubMed results found")
+                except Exception as e:
+                    logger.warning(f"PubMed search failed: {e}")
+            else:
+                logger.info("Energy is LOW - Proceeding with local docs only")
+        else:
+            overall_energy = 1.0  # Gates disabled
         
         # NEW: Check if we have enough evidence for quality control
         confidence_level = "low"
@@ -1175,6 +1313,7 @@ Return valid JSON only, no markdown."""
             "query": user_query,
             "gate_status": "all_gates_passed" if enable_gates else "gates_disabled",
             "gates": gate_results if enable_gates else None,
+            "overall_energy": overall_energy if enable_gates else None,
             "retrieved_count": len(passages),
             "ranked_passages": ranked,
             "filtered_passages": filtered,
@@ -1205,7 +1344,7 @@ Return valid JSON only, no markdown."""
             # Step 6: Verify evidence chain (if requested and answer exists)
             if verify_chain and answer:
                 logger.info("[6/6] Verifying evidence chain...")
-                evidence_chain = self.verify_evidence_chain(answer, filtered, min_similarity=0.6)
+                evidence_chain = self.verify_evidence_chain(answer, filtered, min_entailment_score=0.7)
                 result["evidence_chain"] = evidence_chain
                 
                 # Warn if verification rate is low
@@ -1220,12 +1359,18 @@ Return valid JSON only, no markdown."""
         return result
     
     def query_llm(self, user_query: str, context: str, model: str = "openai/gpt-4o-mini", 
-                  temperature: float = 0.7) -> str:
+                  temperature: float = 0.7) -> tuple:
         if self.enable_cache:
             cache_key = self._get_cache_key("llm", user_query, context, model, temperature)
             if cache_key in self.cache:
                 self.cache_stats["llm_hits"] += 1
-                return self.cache[cache_key]
+                cached_result = self.cache[cache_key]
+                # Handle old cached format (just answer string) vs new format (tuple)
+                if isinstance(cached_result, tuple):
+                    return cached_result
+                else:
+                    # Old cache format - return with empty follow-up questions
+                    return cached_result, []
             self.cache_stats["llm_misses"] += 1
         
         system_prompt = """You are a medical evidence-based medicine (EBM) assistant.
@@ -1258,7 +1403,7 @@ Make sure to cite specific evidence items and provide a confidence assessment.
 
 At the end, add a section:
 ---
-**Suggested Follow-up Questions:**
+**I can also answer:**
 1. [relevant follow-up question based on answer]
 2. [another related question]
 3. [deeper dive question]
@@ -1276,25 +1421,27 @@ At the end, add a section:
         
         answer = response.choices[0].message.content
         
-        if self.enable_cache:
-            self.cache.set(cache_key, answer, expire=self.cache_ttl)
-        
         # Extract follow-up questions if present
         follow_up_questions = []
-        if "Suggested Follow-up Questions:" in answer or "Follow-up Questions:" in answer:
+        if "I can also answer:" in answer or "Suggested Follow-up Questions:" in answer or "Follow-up Questions:" in answer:
             import re
-            # Split on the follow-up questions marker
-            parts = re.split(r'\*\*Suggested Follow-up Questions:\*\*|Follow-up Questions:', answer)
+            # Split on the follow-up questions marker (support both old and new formats)
+            parts = re.split(r'\*\*I can also answer:\*\*|\*\*Suggested Follow-up Questions:\*\*|Follow-up Questions:|I can also answer:', answer)
             if len(parts) > 1:
                 questions_section = parts[-1]
                 # Extract numbered questions
                 question_matches = re.findall(r'\d+\.\s*(.+?)(?=\d+\.|$)', questions_section, re.DOTALL)
                 follow_up_questions = [q.strip().strip('[]').strip() for q in question_matches if q.strip()]
         
-        return answer, follow_up_questions
+        result = (answer, follow_up_questions)
+        
+        if self.enable_cache:
+            self.cache.set(cache_key, result, expire=self.cache_ttl)
+        
+        return result
     
     def generate_differential_diagnosis(self, user_query: str, top_k: int = 10, 
-                                       threshold: float = 0.5, num_diagnoses: int = 5) -> Dict[str, Any]:
+                                       threshold: float = 0.6, num_diagnoses: int = 5) -> Dict[str, Any]:
         """Generate ranked differential diagnoses with confidence explanations.
         
         Args:
@@ -1518,7 +1665,7 @@ def main():
     parser = argparse.ArgumentParser(description="Query the EBM retrieval + LLM pipeline")
     parser.add_argument("query", nargs="?", help="User question or clinical presentation")
     parser.add_argument("--top_k", type=int, default=10, help="Top-k passages to retrieve")
-    parser.add_argument("--threshold", type=float, default=0.5, help="Similarity threshold to keep passages")
+    parser.add_argument("--threshold", type=float, default=0.6, help="Similarity threshold to keep passages")
     parser.add_argument("--no-llm", action="store_true", help="Skip LLM call (retrieval + ranking only)")
     parser.add_argument("--ddx", action="store_true", help="Generate differential diagnosis instead of direct answer")
     parser.add_argument("--no-conflict-check", action="store_true", help="Skip contradiction detection")
@@ -1544,7 +1691,7 @@ def main():
         collection_name=CHROMA_COLLECTION_NAME,
         model_name=MODEL_NAME,
         checkpoint_path=str(RANKING_SCORER_CKPT),
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device=None,  # Will auto-detect CUDA
         enable_cache=True,
     )
 

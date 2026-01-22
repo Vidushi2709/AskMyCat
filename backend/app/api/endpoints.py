@@ -182,3 +182,36 @@ async def query_stream(
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
     
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@router.post("/answer", response_model=QueryResponse, responses={
+    500: {"model": ErrorResponse},
+    503: {"model": ErrorResponse}
+})
+async def answer(
+    request: QueryRequest,
+    service: RAGService = Depends(get_rag_service)
+):
+    """
+    Compatibility endpoint for curl tests. Accepts the same payload as /query.
+    """
+    try:
+        result = service.query(
+            query=request.query,
+            top_k=request.top_k,
+            threshold=request.threshold,
+            enable_gates=request.enable_gates,
+            verify_evidence=request.verify_evidence,
+            detect_conflicts=request.detect_conflicts,
+            use_llm=request.use_llm
+        )
+        return QueryResponse(**result)
+    except Exception as e:
+        logger.error(f"Query failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=ErrorResponse(
+                error="Query execution failed",
+                detail=str(e),
+                suggestion="Check query format and try again"
+            ).dict()
+        )

@@ -113,15 +113,25 @@ class RAGService:
         
         # Format evidence passages
         evidence_passages = []
-        for passage_tuple in result.get("filtered_passages", []):
+        for passage_data in result.get("filtered_passages", []):
             # Handle tuple format: (text, metadata, similarity)
-            if isinstance(passage_tuple, tuple) and len(passage_tuple) >= 3:
-                text, metadata, similarity = passage_tuple[0], passage_tuple[1], passage_tuple[2]
+            if isinstance(passage_data, tuple):
+                if len(passage_data) == 3:
+                    text, metadata, similarity = passage_data
+                elif len(passage_data) == 4:
+                    # Handle potential 4-tuple format (text, metadata, similarity, extra)
+                    text, metadata, similarity, _ = passage_data
+                else:
+                    logger.warning(f"Unexpected tuple length: {len(passage_data)}, skipping")
+                    continue
+            elif isinstance(passage_data, dict):
+                # Fallback if it's a dict
+                text = passage_data.get("text", "")
+                metadata = passage_data.get("metadata", {})
+                similarity = passage_data.get("similarity", 0.0)
             else:
-                # Fallback if it's a dict (shouldn't happen, but safe)
-                text = passage_tuple.get("text", "") if hasattr(passage_tuple, 'get') else str(passage_tuple)
-                metadata = passage_tuple.get("metadata", {}) if hasattr(passage_tuple, 'get') else {}
-                similarity = passage_tuple.get("similarity", 0.0) if hasattr(passage_tuple, 'get') else 0.0
+                logger.warning(f"Unexpected passage format: {type(passage_data)}, skipping")
+                continue
             
             energy = 1 - similarity
             
@@ -145,12 +155,21 @@ class RAGService:
         contradictions = []
         if result.get("contradictions", {}).get("has_contradictions"):
             for conflict in result["contradictions"].get("conflicts", []):
-                contradictions.append({
-                    "passage1_idx": conflict.get("passage1_idx"),
-                    "passage2_idx": conflict.get("passage2_idx"),
-                    "severity": conflict.get("severity"),
-                    "explanation": conflict.get("explanation")
-                })
+                # Only add if all required fields are present and valid
+                passage1_idx = conflict.get("passage1_idx")
+                passage2_idx = conflict.get("passage2_idx")
+                severity = conflict.get("severity")
+                explanation = conflict.get("explanation")
+                
+                if all(x is not None for x in [passage1_idx, passage2_idx, severity, explanation]):
+                    contradictions.append({
+                        "passage1_idx": passage1_idx,
+                        "passage2_idx": passage2_idx,
+                        "severity": severity,
+                        "explanation": explanation
+                    })
+                else:
+                    logger.warning(f"Skipping incomplete contradiction data: {conflict}")
         
         # Build formatted response
         formatted = {
