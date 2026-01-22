@@ -59,9 +59,23 @@ export default function ChatInterface({ messages, setMessages, settings }: ChatI
 
       setMessages([...messages, userMessage, assistantMessage])
     } catch (error: any) {
+      let errorText = 'Failed to get response'
+      
+      if (error.response?.data?.detail) {
+        errorText = typeof error.response.data.detail === 'string' 
+          ? error.response.data.detail 
+          : JSON.stringify(error.response.data.detail)
+      } else if (error.message) {
+        errorText = error.message
+      } else if (error.response?.data) {
+        errorText = typeof error.response.data === 'string'
+          ? error.response.data
+          : JSON.stringify(error.response.data)
+      }
+      
       const errorMessage: ChatMessage = {
         role: 'assistant',
-        content: `Error: ${error.response?.data?.detail || error.message || 'Failed to get response'}`,
+        content: `Error: ${errorText}`,
         timestamp: Date.now(),
       }
       setMessages([...messages, userMessage, errorMessage])
@@ -77,11 +91,11 @@ export default function ChatInterface({ messages, setMessages, settings }: ChatI
   return (
     <div className="flex flex-col h-full">
       {/* Messages */}
-      <div className="flex-1 space-y-6 mb-6">
+      <div className="flex-1 overflow-y-auto space-y-6 pb-6">
         {messages.length === 0 && (
-          <div className="text-center py-12 text-muted-foreground">
-            <p className="text-lg mb-2">👋 Welcome to EBM RAG System</p>
-            <p className="text-sm">Ask a medical question to get started</p>
+          <div className="text-center py-12">
+            <p className="text-lg mb-2 text-gray-700 dark:text-gray-300">👋 Welcome to EBM RAG System</p>
+            <p className="text-sm text-gray-600 dark:text-gray-400">Ask a medical question to get started</p>
           </div>
         )}
         
@@ -94,9 +108,9 @@ export default function ChatInterface({ messages, setMessages, settings }: ChatI
         ))}
         
         {isLoading && (
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span className="text-sm">Processing your query...</span>
+          <div className="flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+            <span className="text-sm text-gray-700 dark:text-gray-300">Processing your query...</span>
           </div>
         )}
         
@@ -104,19 +118,19 @@ export default function ChatInterface({ messages, setMessages, settings }: ChatI
       </div>
 
       {/* Input Form */}
-      <form onSubmit={handleSubmit} className="relative">
+      <form onSubmit={handleSubmit} className="relative mt-4 flex-shrink-0">
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask a medical question..."
           disabled={isLoading}
-          className="w-full px-4 py-3 pr-12 rounded-lg border bg-background focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+          className="w-full px-4 py-3 pr-12 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
         />
         <button
           type="submit"
           disabled={!input.trim() || isLoading}
-          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           <Send className="w-4 h-4" />
         </button>

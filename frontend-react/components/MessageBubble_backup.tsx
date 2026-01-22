@@ -11,7 +11,6 @@ interface MessageBubbleProps {
 }
 
 export default function MessageBubble({ message, onFollowUp }: MessageBubbleProps) {
-  // Helper function to format bold text
   const formatAnswer = (text: string) => {
     if (!text) return ''
     return text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
@@ -34,7 +33,6 @@ export default function MessageBubble({ message, onFollowUp }: MessageBubbleProp
 
   const response = message.response
 
-  // Error message
   if (!response && message.content) {
     return (
       <div className="flex gap-3">
@@ -61,7 +59,6 @@ export default function MessageBubble({ message, onFollowUp }: MessageBubbleProp
       </div>
       
       <div className="flex-1 space-y-4">
-        {/* Gate Status */}
         {response.gates && response.gates.length > 0 && (
           <GateStatus gates={response.gates} status={response.gate_status} />
         )}
@@ -70,21 +67,16 @@ export default function MessageBubble({ message, onFollowUp }: MessageBubbleProp
           <div className="bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4">
             <p className="font-semibold text-red-800 dark:text-red-200 mb-2">Query Rejected</p>
             <p className="text-sm text-gray-700 dark:text-gray-300">
-              The system rejected this query due to quality concerns.
+              The system rejected this query due to quality concerns. 
+              {response.gates.map(g => !g.passed && (
+                <span key={g.gate_name} className="block mt-2">
+                  • {g.gate_name}: {g.reason}
+                </span>
+              ))}
             </p>
-            {response.gates && response.gates.length > 0 && (
-              <div className="mt-2">
-                {response.gates.filter(g => !g.passed).map(g => (
-                  <span key={g.gate_name} className="block mt-1 text-sm">
-                    • {g.gate_name}: {g.reason}
-                  </span>
-                ))}
-              </div>
-            )}
           </div>
         ) : (
           <>
-            {/* Answer */}
             {response.answer && (
               <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3">
                 <div className="flex items-center justify-between">
@@ -99,7 +91,6 @@ export default function MessageBubble({ message, onFollowUp }: MessageBubbleProp
                   dangerouslySetInnerHTML={{ __html: formatAnswer(response.answer) }}
                 />
                 
-                {/* Confidence Badge */}
                 <div className="flex items-center gap-2">
                   <span className={`text-xs px-2 py-1 rounded-full ${
                     response.confidence === 'high' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
@@ -110,7 +101,6 @@ export default function MessageBubble({ message, onFollowUp }: MessageBubbleProp
                   </span>
                 </div>
 
-                {/* Follow-up Questions inside Answer */}
                 {response.follow_up_questions && response.follow_up_questions.length > 0 && (
                   <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
                     <p className="text-sm text-gray-700 dark:text-gray-300 mb-2">If you want, I can also:</p>
@@ -132,7 +122,7 @@ export default function MessageBubble({ message, onFollowUp }: MessageBubbleProp
               </div>
             )}
 
-            {response.has_contradictions && response.contradictions && response.contradictions.length > 0 && (
+            {response.has_contradictions && response.contradictions && (
               <ContradictionAlert contradictions={response.contradictions} />
             )}
 
@@ -140,7 +130,7 @@ export default function MessageBubble({ message, onFollowUp }: MessageBubbleProp
               <EvidenceVerification evidenceChain={response.evidence_chain} />
             )}
 
-            {response.evidence_passages && response.evidence_passages.length > 0 && (
+            {response.evidence_passages.length > 0 && (
               <div className="space-y-2">
                 <h4 className="text-sm font-medium text-gray-600 dark:text-gray-400">
                   📚 Evidence ({response.evidence_count} passages)
