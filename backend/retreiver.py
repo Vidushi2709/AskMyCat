@@ -1,4 +1,3 @@
-# Add parent directory to sys.path for config import
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
@@ -64,7 +63,6 @@ def extract_concepts(text):
 
 # Ranking model (from train.ipynb)
 class RankingScorer(nn.Module):
-    """Ranking model: outputs embeddings for contrastive ranking."""
     def __init__(self, encoder, embedding_dim=None):
         super().__init__()
         if embedding_dim is None:
@@ -286,7 +284,6 @@ class RetrievalPipeline:
     
     def compute_energy_scores(self, passages: List[str], max_len: int = None, 
                              batch_size: int = None) -> List[float]:
-        """Compute EBM energy scores for passages (lower is better)."""
         if max_len is None:
             max_len = config.THRESHOLDS["rerank_max_len"]
         if batch_size is None:
@@ -597,7 +594,6 @@ class RetrievalPipeline:
         return result
     
     def compute_confidence(self, strong_evidence: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Compute confidence score from strong evidence."""
         if not strong_evidence:
             return {
                 "score": 0.0,
