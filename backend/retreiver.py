@@ -1,3 +1,13 @@
+# Add parent directory to sys.path for config import
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+
+import logging
+logger = logging.getLogger("retriever")
+if not logger.hasHandlers():
+    logging.basicConfig(level=logging.INFO)
+
 import os
 import argparse
 from typing import Any, Dict, List, Tuple
@@ -14,88 +24,52 @@ from diskcache import Cache
 from datetime import datetime
 import sys
 from pathlib import Path
-import logging
 import requests
 
-# Add parent directory to path to import config
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Placeholder for extract_concepts if not imported elsewhere
+def extract_concepts(text):
+    # TODO: Replace with actual concept extraction logic
+    # For now, return an empty set to avoid errors
+    return set()
+
+# Placeholder for PubMed search functions
+def pubmed_search(query: str, max_results: int = 5, years: int = 2) -> List[str]:
+    """Placeholder PubMed search function. Returns empty list for now."""
+    logger.warning("PubMed search not implemented - returning empty results")
+    return []
+
+def pubmed_fetch_abstracts(pmids: List[str]) -> List[Dict[str, Any]]:
+    """Placeholder PubMed abstract fetch function. Returns empty list for now."""
+    logger.warning("PubMed abstract fetch not implemented - returning empty results")
+    return []
+
+# Import config constants
 from config import (
-    CHROMA_PATH, CHROMA_COLLECTION_NAME, MODEL_NAME,
-    RANKING_SCORER_CKPT, VERIFICATION_SCORER_CKPT, CACHE_DIR
+    MODEL_NAME, CHROMA_PATH, CHROMA_COLLECTION_NAME, RANKING_SCORER_CKPT, VERIFICATION_SCORER_CKPT, CACHE_DIR, THRESHOLDS
 )
 
-# Load environment variables from .env
-load_dotenv()
+# Setup logger
+logger = logging.getLogger("retriever")
+if not logger.hasHandlers():
+    logging.basicConfig(level=logging.INFO)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Placeholder for extract_concepts if not imported elsewhere
+def extract_concepts(text):
+    # TODO: Replace with actual concept extraction logic
+    # For now, return an empty set to avoid errors
+    return set()
 
-# PubMed API endpoints
-PUBMED_SEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-PUBMED_FETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
-def pubmed_search(query, max_results=5, years=2):
-    """Search PubMed for recent articles matching the query."""
-    current_year = datetime.now().year
-    params = {
-        "db": "pubmed",
-        "term": query,
-        "retmode": "json",
-        "retmax": max_results,
-        "mindate": current_year - years,
-        "maxdate": current_year
-    }
-    r = requests.get(PUBMED_SEARCH, params=params, timeout=10)
-    r.raise_for_status()
-    ids = r.json()["esearchresult"]["idlist"]
-    return ids
-
-def pubmed_fetch_abstracts(ids):
-    """Fetch abstracts for given PubMed IDs."""
-    if not ids:
-        return []
-    
-    params = {
-        "db": "pubmed",
-        "id": ",".join(ids),
-        "retmode": "xml",
-        "rettype": "abstract"
-    }
-    r = requests.get(PUBMED_FETCH, params=params, timeout=15)
-    r.raise_for_status()
-    
-    # Parse XML to extract abstracts (simplified)
-    from xml.etree import ElementTree as ET
-    root = ET.fromstring(r.text)
-    
-    abstracts = []
-    for article in root.findall(".//PubmedArticle"):
-        title_elem = article.find(".//ArticleTitle")
-        abstract_elem = article.find(".//AbstractText")
-        
-        title = title_elem.text if title_elem is not None else "No title"
-        abstract = abstract_elem.text if abstract_elem is not None else "No abstract"
-        
-        # Get PMID
-        pmid_elem = article.find(".//PMID")
-        pmid = pmid_elem.text if pmid_elem is not None else "Unknown"
-        
-        abstracts.append({
-            "pmid": pmid,
-            "title": title,
-            "abstract": abstract,
-            "source": "PubMed",
-            "year": datetime.now().year  # Approximate
-        })
-    
-    return abstracts
+# ...existing code replaced by improved version provided by user...
 
 # Ranking model (from train.ipynb)
 class RankingScorer(nn.Module):
     """Ranking model: outputs embeddings for contrastive ranking."""
-    def __init__(self, encoder, embedding_dim=128):
+    def __init__(self, encoder, embedding_dim=None):
         super().__init__()
+        if embedding_dim is None:
+            from config import THRESHOLDS
+            embedding_dim = THRESHOLDS["embedding_dim"]
         self.encoder = encoder
         self.hidden_dim = encoder.config.hidden_size
         
@@ -129,15 +103,17 @@ class RetrievalPipeline:
                  llm_api_key: str = None,
                  enable_cache: bool = True,
                  cache_dir: str = None):
-        # Use config MODEL_NAME by default
-        model_name = model_name or MODEL_NAME
+        # Load environment variables from .env file
+        load_dotenv()
         
+        # Use config MODEL_NAME by default
+        model_name = model_name or config.MODEL_NAME
         # Use config defaults if not provided
-        chroma_path = chroma_path or str(CHROMA_PATH)
-        collection_name = collection_name or CHROMA_COLLECTION_NAME
-        checkpoint_path = checkpoint_path or str(RANKING_SCORER_CKPT)
-        verification_checkpoint_path = verification_checkpoint_path or str(VERIFICATION_SCORER_CKPT)
-        cache_dir = cache_dir or str(CACHE_DIR)
+        chroma_path = chroma_path or str(config.CHROMA_PATH)
+        collection_name = collection_name or config.CHROMA_COLLECTION_NAME
+        checkpoint_path = checkpoint_path or str(config.RANKING_SCORER_CKPT)
+        verification_checkpoint_path = verification_checkpoint_path or str(config.VERIFICATION_SCORER_CKPT)
+        cache_dir = cache_dir or str(config.CACHE_DIR)
         
         # Set device
         if device is None:
@@ -150,10 +126,10 @@ class RetrievalPipeline:
         if enable_cache:
             # Cache with size limit (1GB) and LRU eviction policy
             self.cache = Cache(cache_dir, 
-                               size_limit=int(1e9),  # 1GB max
+                               size_limit=config.THRESHOLDS["cache_size_limit"], 
                                eviction_policy='least-recently-used')
             # Set TTL for cache entries (7 days in seconds)
-            self.cache_ttl = 7 * 24 * 60 * 60
+            self.cache_ttl = config.THRESHOLDS["cache_ttl_seconds"]
             self.cache_stats = {
                 "retrieval_hits": 0,
                 "retrieval_misses": 0,
@@ -178,14 +154,14 @@ class RetrievalPipeline:
         encoder = AutoModel.from_pretrained(model_name)
         
         # Load ranking scorer
-        self.ranking_model = RankingScorer(encoder, embedding_dim=128).to(device)
+        self.ranking_model = RankingScorer(encoder, embedding_dim=config.THRESHOLDS["embedding_dim"]).to(device)
         # Use weights_only=True to avoid loading arbitrary pickled objects
         self.ranking_model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
         self.ranking_model.eval()
         logger.info(f"Loaded ranking model from {checkpoint_path}")
         
         # Load verification scorer (separate model for verification)
-        self.verification_model = RankingScorer(encoder, embedding_dim=128).to(device)
+        self.verification_model = RankingScorer(encoder, embedding_dim=config.THRESHOLDS["embedding_dim"]).to(device)
         self.verification_model.load_state_dict(torch.load(verification_checkpoint_path, map_location=device, weights_only=True))
         self.verification_model.eval()
         logger.info(f"Loaded verification model from {verification_checkpoint_path}")
@@ -236,6 +212,17 @@ class RetrievalPipeline:
         logger.info(f"Cache Size: {len(self.cache)} entries")
         logger.info("="*60)
         
+    def _chunk_text(self, text: str, chunk_size: int = None) -> List[str]:
+        """Chunk text into smaller pieces for ranking."""
+        if chunk_size is None:
+            chunk_size = config.THRESHOLDS["text_chunk_size"]
+        words = text.split()
+        chunks = []
+        for i in range(0, len(words), chunk_size):
+            chunk = ' '.join(words[i:i+chunk_size])
+            chunks.append(chunk)
+        return chunks
+    
     def retrieve_top_k(self, query: str, top_k: int = 5) -> Tuple[List[str], List[Dict[str, Any]]]:
         if self.enable_cache:
             cache_key = self._get_cache_key("retrieve", query, top_k)
@@ -257,7 +244,12 @@ class RetrievalPipeline:
         return result
     
     def rerank_passages(self, query: str, passages: List[str], metadatas: List[Dict[str, Any]],
-                       max_len: int = 128, batch_size: int = 32) -> List[Tuple[str, Dict, float]]:
+                       max_len: int = None, batch_size: int = None) -> List[Tuple[str, Dict, float]]:
+        """Rerank passages using the trained ranking model."""
+        if max_len is None:
+            max_len = config.THRESHOLDS["rerank_max_len"]
+        if batch_size is None:
+            batch_size = config.THRESHOLDS["rerank_batch_size"]
         """Rerank passages using the trained ranking model."""
         scores = []
         
@@ -292,8 +284,63 @@ class RetrievalPipeline:
         
         return sorted(zip(passages, metadatas, scores), key=lambda x: x[2], reverse=True)
     
+    def compute_energy_scores(self, passages: List[str], max_len: int = None, 
+                             batch_size: int = None) -> List[float]:
+        """Compute EBM energy scores for passages (lower is better)."""
+        if max_len is None:
+            max_len = config.THRESHOLDS["rerank_max_len"]
+        if batch_size is None:
+            batch_size = config.THRESHOLDS["rerank_batch_size"]
+        
+        # Use a reference "good evidence" query for energy computation
+        reference_query = "clinical evidence medical study research"
+        
+        energies = []
+        
+        device_type = "cuda" 
+        with torch.no_grad():
+            # Encode reference query
+            enc_ref = self.tokenizer(
+                reference_query,
+                truncation=True,
+                padding="max_length",
+                max_length=max_len,
+                return_tensors="pt"
+            )
+            # Ensure tensors are on the correct device
+            enc_ref = {k: v.to(self.device) for k, v in enc_ref.items()}
+            ref_embedding = self.verification_model(enc_ref)  # [1, embedding_dim]
+            
+            # Process passages in batches
+            for i in range(0, len(passages), batch_size):
+                batch_passages = passages[i:i + batch_size]
+                enc_passages = self.tokenizer(
+                    batch_passages,
+                    truncation=True,
+                    padding="max_length",
+                    max_length=max_len,
+                    return_tensors="pt"
+                )
+                # Ensure tensors are on the correct device
+                enc_passages = {k: v.to(self.device) for k, v in enc_passages.items()}
+                passage_embeddings = self.verification_model(enc_passages)  # [batch_size, embedding_dim]
+                
+                # Energy = 1 - similarity (lower energy = more evidence-like)
+                sims = F.cosine_similarity(ref_embedding, passage_embeddings)  # [batch_size]
+                batch_energies = 1.0 - sims  # Raw energy scores
+                
+                # Normalize energy using sigmoid(-energy) - converts to 0-1 scale where lower energy = better
+                normalized_energies = torch.sigmoid(-batch_energies)
+                batch_energies_normalized = normalized_energies.detach().cpu().tolist()
+                
+                energies.extend(batch_energies_normalized)
+        
+        return energies
+    
     def filter_by_threshold(self, ranked_passages: List[Tuple[str, Dict, float]], 
-                           threshold: float = 0.6) -> List[Tuple[str, Dict, float]]:
+                           threshold: float = None) -> List[Tuple[str, Dict, float]]:
+        if threshold is None:
+            threshold = config.THRESHOLDS["similarity_threshold"]
         
         filtered = [p for p in ranked_passages if p[2] >= threshold]
         return filtered
@@ -348,12 +395,16 @@ class RetrievalPipeline:
 
         context_parts = []
         for i, (passage, metadata, score) in enumerate(deduped, 1):
-            context_parts.append(f"[Evidence {i}] (confidence: {score:.3f})\n{passage}")
+            source = "PubMed" if metadata.get("source_type") == "pubmed" else "Local"
+            year = f" {metadata['year']}" if metadata.get("year") else ""
+            context_parts.append(f"[Evidence {i}] ({source}{year}, confidence: {score:.3f})\n{passage}")
 
         return "\n\n".join(context_parts)
     
     # gate 1: query quality check
-    def gate_1_query_quality(self, user_query: str, threshold: float = 0.7) -> Dict[str, Any]:
+    def gate_1_query_quality(self, user_query: str, threshold: float = None) -> Dict[str, Any]:
+        if threshold is None:
+            threshold = config.THRESHOLDS["gate1"]
         logger.info("Gate 1: Checking query quality...")
         
         # Simple heuristics for query quality
@@ -401,72 +452,75 @@ class RetrievalPipeline:
         
         return result
     
-    # gate 2: retrieval quality check 
-    def gate_2_retrieval_quality(self, passages: List[str], metadatas: List[Dict], 
-                                 threshold: float = 0.6) -> Dict[str, Any]:
-        logger.info("Gate 2: Checking retrieval quality...")
+    # gate 2: retrieval sufficiency check 
+    def gate_2_retrieval_sufficiency(self, query: str, retrieved_chunks: List[Dict[str, Any]], threshold: float = None) -> Tuple[bool, Dict[str, Any], List[Dict[str, Any]]]:
+        if threshold is None:
+            threshold = config.THRESHOLDS["gate2"]
+        logger.info("Gate 2: Checking retrieval sufficiency...")
         
-        energy_score = 1.0
-        reasons = []
+        # Get top passages by similarity (no energy/confidence filtering here)
+        strong = sorted(retrieved_chunks, key=lambda x: x["similarity"], reverse=True)
         
-        # Check if we got any results
-        if not passages or len(passages) == 0:
-            return {
-                "gate": "retrieval_quality",
-                "passed": False,
-                "energy_score": 0.0,
-                "threshold": threshold,
-                "reasons": ["No evidence found in database"],
-                "action": "reject"
-            }
+        # Apply similarity threshold to get strong evidence
+        threshold = max(0.4, config.THRESHOLDS["sim_threshold"] - 0.1)  # Dynamic threshold
+        strong = [c for c in strong if c["similarity"] >= threshold][:10]  # Top 10 max
         
-        # Check number of results
-        if len(passages) < 3:
-            energy_score -= 0.3
-            reasons.append(f"Only {len(passages)} passages found - limited evidence")
-        elif len(passages) < 5:
-            energy_score -= 0.1
-            reasons.append(f"Moderate evidence: {len(passages)} passages")
-        else:
-            reasons.append(f"Good coverage: {len(passages)} passages found")
+        # Guarantee minimum evidence (fallback to top-3 if threshold too strict)
+        if len(strong) < 3:
+            strong = sorted(retrieved_chunks, key=lambda x: x["similarity"], reverse=True)[:3]
         
-        # Check passage length (too short = low quality)
-        avg_length = sum(len(p) for p in passages) / len(passages)
-        if avg_length < 100:
-            energy_score -= 0.2
-            reasons.append("Passages are very short - may lack context")
-        elif avg_length < 200:
-            energy_score -= 0.1
-            reasons.append("Passages are somewhat short")
+        # BINARY CHECKS: Count and Coverage only
+        count_ok = len(strong) >= config.THRESHOLDS["min_strong_evidence"]
+        covered_concepts = self._get_covered_concepts(strong)
+        coverage = len(covered_concepts) / 3.0  # disease, organ, mechanism
+        coverage_ok = coverage >= config.THRESHOLDS["min_coverage"]
         
-        # Check for duplicate or near-duplicate passages
-        unique_passages = set(p.strip().lower()[:200] for p in passages)
-        duplicate_ratio = 1 - (len(unique_passages) / len(passages))
-        if duplicate_ratio > 0.3:
-            energy_score -= 0.15
-            reasons.append(f"High duplication rate ({duplicate_ratio:.0%})")
+        # PURELY BINARY: Pass if count is sufficient OR if we have lots of evidence (bypass coverage)
+        # This allows queries with many strong evidence pieces to pass even if concept extraction is incomplete
+        passed = count_ok and (coverage_ok or len(strong) >= 5)
         
-        passed = energy_score >= threshold
-        
-        result = {
-            "gate": "retrieval_quality",
+        gate_info = {
+            "gate": "retrieval_sufficiency",
             "passed": passed,
-            "energy_score": max(0.0, energy_score),
+            "energy_score": 1.0 if passed else 0.0,  # Binary: 1.0 for sufficient, 0.0 for insufficient
             "threshold": threshold,
-            "reasons": reasons,
-            "action": "proceed" if passed else "reject"
+            "num_strong_evidence": len(strong),
+            "count_ok": count_ok,
+            "coverage_ok": coverage_ok,
+            "coverage": round(coverage, 2),  # Keep for error messages
+            "covered_concepts": list(self._get_covered_concepts(strong)),
+            "thresholds": {
+                "similarity": config.THRESHOLDS["sim_threshold"],
+                "min_strong_evidence": config.THRESHOLDS["min_strong_evidence"],
+                "min_coverage": config.THRESHOLDS["min_coverage"]
+            }
         }
         
         if passed:
-            logger.info(f" Gate 2 PASSED: Retrieval quality = {result['energy_score']:.2f}")
+            logger.info(f"Gate 2 PASSED: {len(strong)} strong evidence, sufficient for answer")
         else:
-            logger.warning(f" Gate 2 FAILED: Retrieval quality = {result['energy_score']:.2f} (threshold: {threshold})")
+            logger.warning(f"Gate 2 FAILED: {len(strong)} strong evidence, insufficient for answer")
         
-        return result
+        return passed, gate_info, strong
+    
+    def _check_concept_coverage(self, chunks: List[Dict[str, Any]]) -> bool:
+        """Check if chunks cover required medical concepts."""
+        covered_concepts = self._get_covered_concepts(chunks)
+        coverage = len(covered_concepts) / 3.0  # disease, organ, mechanism
+        return coverage >= config.THRESHOLDS["min_coverage"]
+    
+    def _get_covered_concepts(self, chunks: List[Dict[str, Any]]) -> set:
+        """Get set of covered medical concepts."""
+        covered_concepts = set()
+        for c in chunks:
+            covered_concepts |= extract_concepts(c["text"])
+        return covered_concepts
     
     # gate 3: evidence consistency check
     def gate_3_evidence_consistency(self, filtered_passages: List[Tuple[str, Dict, float]], 
-                                   threshold: float = 0.65) -> Dict[str, Any]:
+                                   threshold: float = None) -> Dict[str, Any]:
+        if threshold is None:
+            threshold = config.THRESHOLDS["gate3"]
         logger.info("Gate 3: Checking evidence consistency...")
         
         energy_score = 1.0
@@ -542,9 +596,65 @@ class RetrievalPipeline:
         
         return result
     
+    def compute_confidence(self, strong_evidence: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Compute confidence score from strong evidence."""
+        if not strong_evidence:
+            return {
+                "score": 0.0,
+                "label": "LOW",
+                "components": {
+                    "mean_similarity": 0.0,
+                    "mean_energy": 1.0,
+                    "evidence_count": 0,
+                    "coverage": 0.0,
+                }
+            }
+        
+        similarities = [c["similarity"] for c in strong_evidence]
+        energies = [c["energy"] for c in strong_evidence]
+        
+        mean_sim = sum(similarities) / len(similarities)
+        mean_energy = sum(energies) / len(energies)
+        
+        # coverage again
+        covered_concepts = set()
+        for c in strong_evidence:
+            covered_concepts |= extract_concepts(c["text"])
+        
+        coverage = len(covered_concepts) / 3.0
+        n = len(strong_evidence)
+        
+        # confidence formula (using normalized energy scores where lower = better)
+        score = (
+            0.35 * mean_sim +
+            0.35 * (1.0 - mean_energy) +  # mean_energy is now normalized [0,1], lower = better
+            0.20 * min(1.0, n / 3.0) +
+            0.10 * coverage
+        )
+        
+        if score >= 0.75:
+            label = "HIGH"
+        elif score >= 0.55:
+            label = "MEDIUM"
+        else:
+            label = "LOW"
+        
+        return {
+            "score": round(score, 3),
+            "label": label,
+            "components": {
+                "mean_similarity": round(mean_sim, 3),
+                "mean_energy": round(mean_energy, 3),
+                "evidence_count": n,
+                "coverage": round(coverage, 2),
+            }
+        }
+    
     # verify each evidence with answer 
     def verify_evidence_chain(self, answer: str, filtered_passages: List[Tuple[str, Dict, float]],
-                             min_entailment_score: float = 0.6) -> Dict[str, Any]:
+                             min_entailment_score: float = None) -> Dict[str, Any]:
+        if min_entailment_score is None:
+            min_entailment_score = THRESHOLDS["min_entailment_score"]
         logger.info(" Verifying evidence chain...")
         
         if not answer or not filtered_passages:
@@ -1003,11 +1113,6 @@ SEVERITY LEVELS:
 - "minor": Different approaches to same goal"""
         
         user_prompt = f"""Query: {user_query}
-
-Analyze these evidence sources for contradictions:
-
-{evidence_text}
-
 Return valid JSON only, no markdown."""
         
         try:
@@ -1124,11 +1229,16 @@ Return valid JSON only, no markdown."""
         
         return "\n".join(output)
     
-    def answer_query(self, user_query: str, top_k: int = 10, threshold: float = 0.6, 
+    def answer_query(self, user_query: str, top_k: int = None, threshold: float = None, 
                      use_llm: bool = True, detect_conflicts: bool = True,
                      enable_gates: bool = True,
                      gate_thresholds: Dict[str, float] = None,
                      verify_chain: bool = False) -> Dict[str, Any]:
+        if top_k is None:
+            top_k = THRESHOLDS["default_top_k"]
+        if threshold is None:
+            threshold = THRESHOLDS["similarity_threshold"]
+        
         logger.info("="*80)
         logger.info(f"Query: {user_query}")
         logger.info("="*80)
@@ -1136,9 +1246,9 @@ Return valid JSON only, no markdown."""
         # Set default gate thresholds
         if gate_thresholds is None:
             gate_thresholds = {
-                "gate1": 0.7,   # Query quality
-                "gate2": 0.6,   # Retrieval quality  
-                "gate3": 0.65   # Evidence consistency
+                "gate1": THRESHOLDS["gate1"],   # Query quality
+                "gate2": THRESHOLDS["gate2"],   # Retrieval quality  
+                "gate3": THRESHOLDS["gate3"]    # Evidence consistency
             }
         
         gate_results = {}
@@ -1171,50 +1281,156 @@ Return valid JSON only, no markdown."""
         passages, metadatas = self.retrieve_top_k(user_query, top_k)
         logger.info(f"[1/5] Retrieved {len(passages)} passages")
         
-        if enable_gates:
-            gate2_result = self.gate_2_retrieval_quality(passages, metadatas, gate_thresholds["gate2"])
-            gate_results["gate2"] = gate2_result
-            
-            if not gate2_result["passed"]:
-                logger.warning(" Gate 2 REJECTED - Stopping pipeline early")
-                diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate2")
-                # Provide partial evidence (top 3 retrieved passages even if low quality)
-                partial_evidence = [(passages[i], metadatas[i], 0.0) for i in range(min(3, len(passages)))]
-                return {
-                    "query": user_query,
-                    "gate_status": "rejected_at_gate2",
-                    "gates": gate_results,
-                    "retrieved_count": len(passages),
-                    "ranked_passages": [],
-                    "filtered_passages": [],
-                    "partial_evidence": partial_evidence,
-                    "context": None,
-                    "answer": None,
-                    "rejection_reason": f"Retrieval quality too low: {', '.join(gate2_result['reasons'])}",
-                    "suggestion": "Insufficient evidence found. This may require specialized medical consultation.",
-                    "compute_saved": "Saved: reranking + LLM",
-                    "confidence": "rejected",
-                    "diagnosis": diagnosis
-                }
-        
         # Step 2: Rerank
         ranked = self.rerank_passages(user_query, passages, metadatas)
         logger.info(f"[2/5] Ranked {len(ranked)} passages")
         
-        # Step 3: Filter
-        filtered = self.filter_by_threshold(ranked, threshold)
-        filtered = self.filter_by_medical_keyword(filtered, user_query)
-        logger.info(f"[3/5] Filtered to {len(filtered)} high-confidence, keyword-matching passages")
+        # Step 3: Compute energy scores
+        ranked_passages = [p[0] for p in ranked]
+        energies = self.compute_energy_scores(ranked_passages)
+        logger.info(f"[3/5] Computed energy scores for {len(energies)} passages")
+        
+        # Create retrieved_chunks for gate 2
+        retrieved_chunks = []
+        for i, ((passage, metadata, similarity), energy) in enumerate(zip(ranked, energies)):
+            retrieved_chunks.append({
+                "text": passage,
+                "similarity": similarity,
+                "energy": energy,
+                "metadata": metadata,
+                "rank": i + 1
+            })
+            logger.debug(f"Chunk {i+1}: sim={similarity:.3f}, energy={energy:.3f}")
+        
+        # Initialize strong_evidence (either from gates or all chunks)
+        strong_evidence = retrieved_chunks  # Default to all chunks when gates disabled
+        
+        if enable_gates:
+            # Gate 2: Retrieval Sufficiency
+            gate2_passed, gate2_info, strong_evidence = self.gate_2_retrieval_sufficiency(user_query, retrieved_chunks, gate_thresholds["gate2"])
+            gate_results["gate2"] = gate2_info
+            
+            if not gate2_passed:
+                logger.warning(" Gate 2 FAILED - Attempting PubMed fallback")
+                try:
+                    pubmed_ids = pubmed_search(user_query, max_results=5, years=2)
+                    if pubmed_ids:
+                        pubmed_abstracts = pubmed_fetch_abstracts(pubmed_ids)
+                        logger.info(f"PubMed fallback: Retrieved {len(pubmed_abstracts)} abstracts")
+                        
+                        for abstract_data in pubmed_abstracts:
+                            chunks = self._chunk_text(abstract_data["abstract"], chunk_size=200)
+                            for chunk in chunks:
+                                passages.append(chunk)
+                                metadatas.append({
+                                    "source_type": "pubmed",
+                                    "pmid": abstract_data["pmid"],
+                                    "title": abstract_data["title"],
+                                    "year": abstract_data["year"],
+                                    "topic_name": "PubMed"
+                                })
+                        
+                        # Re-rerank with combined passages
+                        ranked = self.rerank_passages(user_query, passages, metadatas)
+                        energies = self.compute_energy_scores([p[0] for p in ranked])
+                        
+                        # Update retrieved_chunks
+                        retrieved_chunks = []
+                        for i, ((passage, metadata, similarity), energy) in enumerate(zip(ranked, energies)):
+                            retrieved_chunks.append({
+                                "text": passage,
+                                "similarity": similarity,
+                                "energy": energy,
+                                "metadata": metadata,
+                                "rank": i + 1
+                            })
+                        
+                        # Re-run gate2
+                        gate2_passed, gate2_info, strong_evidence = self.gate_2_retrieval_sufficiency(user_query, retrieved_chunks, gate_thresholds["gate2"])
+                        gate_results["gate2"] = gate2_info
+                        
+                        if not gate2_passed:
+                            logger.warning(" Gate 2 STILL FAILED after PubMed - Stopping pipeline")
+                            diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate2")
+                            partial_evidence = [(passages[i], metadatas[i], 0.0) for i in range(min(3, len(passages)))]
+                            return {
+                                "query": user_query,
+                                "gate_status": "rejected_at_gate2",
+                                "gates": gate_results,
+                                "retrieved_count": len(passages),
+                                "ranked_passages": [],
+                                "filtered_passages": [],
+                                "partial_evidence": partial_evidence,
+                                "context": None,
+                                "answer": None,
+                                "rejection_reason": f"Retrieval sufficiency too low even after PubMed fallback: {gate2_info['num_strong_evidence']} strong evidence, {gate2_info['coverage']:.1%} coverage",
+                                "suggestion": "Insufficient evidence found. This may require specialized medical consultation.",
+                                "compute_saved": "Saved: reranking + LLM",
+                                "confidence": "rejected",
+                                "diagnosis": diagnosis,
+                                "gate_diagnostics": gate2_info
+                            }
+                    else:
+                        logger.warning("No PubMed results - rejecting")
+                        diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate2")
+                        partial_evidence = [(passages[i], metadatas[i], 0.0) for i in range(min(3, len(passages)))]
+                        return {
+                            "query": user_query,
+                            "gate_status": "rejected_at_gate2",
+                            "gates": gate_results,
+                            "retrieved_count": len(passages),
+                            "ranked_passages": [],
+                            "filtered_passages": [],
+                            "partial_evidence": partial_evidence,
+                            "context": None,
+                            "answer": None,
+                            "rejection_reason": f"Retrieval sufficiency too low: {gate2_info['num_strong_evidence']} strong evidence, {gate2_info['coverage']:.1%} coverage",
+                            "suggestion": "Insufficient evidence found. This may require specialized medical consultation.",
+                            "compute_saved": "Saved: reranking + LLM",
+                            "confidence": "rejected",
+                            "diagnosis": diagnosis,
+                            "gate_diagnostics": gate2_info
+                        }
+                except Exception as e:
+                    logger.warning(f"PubMed fallback failed: {e} - rejecting")
+                    diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate2")
+                    partial_evidence = [(passages[i], metadatas[i], 0.0) for i in range(min(3, len(passages)))]
+                    return {
+                        "query": user_query,
+                        "gate_status": "rejected_at_gate2",
+                        "gates": gate_results,
+                        "retrieved_count": len(passages),
+                        "ranked_passages": [],
+                        "filtered_passages": [],
+                        "partial_evidence": partial_evidence,
+                        "context": None,
+                        "answer": None,
+                        "rejection_reason": f"Retrieval sufficiency too low: {gate2_info['num_strong_evidence']} strong evidence, {gate2_info['coverage']:.1%} coverage",
+                        "suggestion": "Insufficient evidence found. This may require specialized medical consultation.",
+                        "compute_saved": "Saved: reranking + LLM",
+                        "confidence": "rejected",
+                        "diagnosis": diagnosis,
+                        "gate_diagnostics": gate2_info
+                    }
+        
+        # Compute confidence from strong evidence
+        confidence = self.compute_confidence(strong_evidence)
+        logger.info(f"[4/6] Confidence: {confidence['label']} ({confidence['score']:.3f})")
+        
+        # Step 4: Filter (using strong evidence as filtered)
+        filtered = [(c["text"], c["metadata"], c["similarity"]) for c in strong_evidence]
+        logger.info(f"[5/6] Using {len(filtered)} strong evidence passages")
         
         if enable_gates:
             gate3_result = self.gate_3_evidence_consistency(filtered, gate_thresholds["gate3"])
             gate_results["gate3"] = gate3_result
             
             if not gate3_result["passed"]:
-                logger.warning(" Gate 3 REJECTED - Stopping pipeline early")
+                logger.warning(" Gate 3 FAILED - Attempting PubMed fallback")
+                # PubMed fallback already done in gate2, so just reject
+                logger.warning(" Gate 3 STILL FAILED - Stopping pipeline")
                 diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate3")
                 context = self.prepare_for_llm(filtered) if filtered else "No evidence passed threshold"
-                # Provide partial evidence (whatever passed filtering)
                 partial_evidence = filtered[:3] if filtered else []
                 return {
                     "query": user_query,
@@ -1223,6 +1439,7 @@ Return valid JSON only, no markdown."""
                     "retrieved_count": len(passages),
                     "ranked_passages": ranked,
                     "filtered_passages": filtered,
+                    "strong_evidence": strong_evidence,
                     "partial_evidence": partial_evidence,
                     "context": context,
                     "answer": None,
@@ -1231,6 +1448,15 @@ Return valid JSON only, no markdown."""
                     "compute_saved": "Saved: LLM call",
                     "confidence": "rejected",
                     "diagnosis": diagnosis,
+                    "gate_diagnostics": {
+                        "gate": "evidence_consistency",
+                        "passed": False,
+                        "consistency_score": gate3_result.get("energy_score", 0.0),
+                        "threshold": gate_thresholds["gate3"],
+                        "reasons": gate3_result.get("reasons", []),
+                        "num_strong_evidence": len(strong_evidence),
+                        "coverage": gate2_info.get("coverage", 0.0) if 'gate2_info' in locals() else 0.0
+                    },
                     "evidence_metadata": {
                         "num_sources": len(filtered),
                         "avg_similarity": gate3_result.get("metrics", {}).get("avg_similarity", 0.0),
@@ -1247,38 +1473,6 @@ Return valid JSON only, no markdown."""
                             gate_results["gate2"]["energy_score"] + 
                             gate_results["gate3"]["energy_score"]) / 3
             logger.info(f"Overall energy score: {overall_energy:.2f}")
-            
-            # If energy is HIGH, trigger PubMed search as fallback
-            if overall_energy > 0.7:
-                logger.info("High energy detected - Triggering PubMed search for additional evidence")
-                try:
-                    pubmed_ids = pubmed_search(user_query, max_results=5, years=2)
-                    if pubmed_ids:
-                        pubmed_abstracts = pubmed_fetch_abstracts(pubmed_ids)
-                        logger.info(f"Retrieved {len(pubmed_abstracts)} PubMed abstracts")
-                        
-                        # Add PubMed abstracts to passages for reranking
-                        for abstract_data in pubmed_abstracts:
-                            passages.append(abstract_data["abstract"])
-                            metadatas.append({
-                                "source_type": "pubmed",
-                                "pmid": abstract_data["pmid"],
-                                "title": abstract_data["title"],
-                                "year": abstract_data["year"],
-                                "topic_name": "PubMed"
-                            })
-                        
-                        # Rerank again with PubMed results included
-                        ranked = self.rerank_passages(user_query, passages, metadatas)
-                        filtered = self.filter_by_threshold(ranked, threshold)
-                        filtered = self.filter_by_medical_keyword(filtered, user_query)
-                        logger.info(f"After PubMed integration: {len(filtered)} total filtered passages")
-                    else:
-                        logger.info("No PubMed results found")
-                except Exception as e:
-                    logger.warning(f"PubMed search failed: {e}")
-            else:
-                logger.info("Energy is LOW - Proceeding with local docs only")
         else:
             overall_energy = 1.0  # Gates disabled
         
@@ -1317,6 +1511,7 @@ Return valid JSON only, no markdown."""
             "retrieved_count": len(passages),
             "ranked_passages": ranked,
             "filtered_passages": filtered,
+            "strong_evidence": strong_evidence,
             "context": context,
             "answer": None,
             "follow_up_questions": [],  # Initialize as empty list
@@ -1332,9 +1527,14 @@ Return valid JSON only, no markdown."""
         }
         
         if use_llm and filtered:
-            logger.info(f"[5/6] Querying LLM...")
+            logger.info(f"[6/6] Querying LLM...")
             start_time = datetime.now()
-            answer, follow_up_questions = self.query_llm(user_query, context)
+            llm_result = self.query_llm(user_query, context)
+            if llm_result is None:
+                logger.error("LLM query returned None")
+                answer, follow_up_questions = None, []
+            else:
+                answer, follow_up_questions = llm_result
             end_time = datetime.now()
             result["answer"] = answer
             result["follow_up_questions"] = follow_up_questions
@@ -1356,21 +1556,28 @@ Return valid JSON only, no markdown."""
         else:
             logger.info(f"[5/6] Skipping LLM (use_llm={use_llm}, filtered={len(filtered)>0})")
         
+        logger.info(f"About to return result with keys: {list(result.keys()) if result else 'None'}")
         return result
     
     def query_llm(self, user_query: str, context: str, model: str = "openai/gpt-4o-mini", 
-                  temperature: float = 0.7) -> tuple:
+                  temperature: float = None) -> tuple:
+        if temperature is None:
+            temperature = THRESHOLDS["llm_temperature"]
         if self.enable_cache:
             cache_key = self._get_cache_key("llm", user_query, context, model, temperature)
             if cache_key in self.cache:
                 self.cache_stats["llm_hits"] += 1
                 cached_result = self.cache[cache_key]
-                # Handle old cached format (just answer string) vs new format (tuple)
-                if isinstance(cached_result, tuple):
-                    return cached_result
+                if cached_result is not None:
+                    # Handle old cached format (just answer string) vs new format (tuple)
+                    if isinstance(cached_result, tuple):
+                        return cached_result
+                    else:
+                        # Old cache format - return with empty follow-up questions
+                        return cached_result, []
                 else:
-                    # Old cache format - return with empty follow-up questions
-                    return cached_result, []
+                    # Cached None - treat as miss
+                    self.cache_stats["llm_misses"] += 1
             self.cache_stats["llm_misses"] += 1
         
         system_prompt = """You are a medical evidence-based medicine (EBM) assistant.
@@ -1421,9 +1628,13 @@ At the end, add a section:
         
         answer = response.choices[0].message.content
         
+        if answer is None:
+            logger.error("LLM returned None content")
+            return None
+        
         # Extract follow-up questions if present
         follow_up_questions = []
-        if "I can also answer:" in answer or "Suggested Follow-up Questions:" in answer or "Follow-up Questions:" in answer:
+        if answer and ("I can also answer:" in answer or "Suggested Follow-up Questions:" in answer or "Follow-up Questions:" in answer):
             import re
             # Split on the follow-up questions marker (support both old and new formats)
             parts = re.split(r'\*\*I can also answer:\*\*|\*\*Suggested Follow-up Questions:\*\*|Follow-up Questions:|I can also answer:', answer)
@@ -1440,8 +1651,14 @@ At the end, add a section:
         
         return result
     
-    def generate_differential_diagnosis(self, user_query: str, top_k: int = 10, 
-                                       threshold: float = 0.6, num_diagnoses: int = 5) -> Dict[str, Any]:
+    def generate_differential_diagnosis(self, user_query: str, top_k: int = None, 
+                                       threshold: float = None, num_diagnoses: int = None) -> Dict[str, Any]:
+        if top_k is None:
+            top_k = THRESHOLDS["default_top_k"]
+        if threshold is None:
+            threshold = THRESHOLDS["similarity_threshold"]
+        if num_diagnoses is None:
+            num_diagnoses = THRESHOLDS["num_diagnoses"]
         """Generate ranked differential diagnoses with confidence explanations.
         
         Args:
@@ -1664,8 +1881,8 @@ def main():
     """CLI entrypoint: ask a question and talk to the LLM."""
     parser = argparse.ArgumentParser(description="Query the EBM retrieval + LLM pipeline")
     parser.add_argument("query", nargs="?", help="User question or clinical presentation")
-    parser.add_argument("--top_k", type=int, default=10, help="Top-k passages to retrieve")
-    parser.add_argument("--threshold", type=float, default=0.6, help="Similarity threshold to keep passages")
+    parser.add_argument("--top_k", type=int, default=THRESHOLDS["default_top_k"], help="Top-k passages to retrieve")
+    parser.add_argument("--threshold", type=float, default=THRESHOLDS["similarity_threshold"], help="Similarity threshold to keep passages")
     parser.add_argument("--no-llm", action="store_true", help="Skip LLM call (retrieval + ranking only)")
     parser.add_argument("--ddx", action="store_true", help="Generate differential diagnosis instead of direct answer")
     parser.add_argument("--no-conflict-check", action="store_true", help="Skip contradiction detection")

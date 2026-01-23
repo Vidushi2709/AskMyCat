@@ -3,6 +3,7 @@ import sys
 import json
 import argparse
 import hashlib
+import re
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -62,18 +63,74 @@ def normalize_rows(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not passage:
             continue
 
+        # Clean answer-key artifacts
+        passage = clean_medical_text(passage)
+
+        subject_name = (x.get("subject_name") or "").strip()
+        topic_name = (x.get("topic_name") or "").strip()
+        
+        # Normalize topic metadata - never leave empty
+        if not topic_name:
+            if subject_name:
+                topic_name = subject_name  # Infer from subject
+            else:
+                topic_name = "Unknown"
+
         rows.append({
-            "question": (x.get("question") or "").strip(),
-            "exp": passage,
-            "subject_name": (x.get("subject_name") or "").strip(),
-            "topic_name": (x.get("topic_name") or "").strip(),
+            "question": (x.get("question") or "").strip(),  # Stored in metadata only
+            "exp": passage,  # Evidence/answer text only - becomes chunk content
+            "subject_name": subject_name,
+            "topic_name": topic_name,
             "id": str(x.get("id") or "").strip(),
         })
     return rows
 
+def clean_medical_text(text: str) -> str:
+    if not text:
+        return text
+    
+    # Remove "Ans." prefixes (case insensitive, with optional punctuation)
+    text = re.sub(r'\bans\.?\s*', '', text, flags=re.IGNORECASE)
+    
+    # Remove option letters like (a), (b), (c), etc. at start of lines or text
+    text = re.sub(r'^\s*\([a-zA-Z]\)\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\b[a-zA-Z]\.\s*', '', text)  # Remove "a. ", "b. ", etc.
+    
+    # Remove page references like "P 640", "p. 123", "page 45"
+    text = re.sub(r'\b[Pp]\.?\s*\d+', '', text)
+    text = re.sub(r'\bpage\s+\d+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bp\.\s*\d+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bpage\s+\d+', '', text, flags=re.IGNORECASE)
+    
+    # Remove edition references like "19th ed.", "2nd edition", etc.
+    text = re.sub(r'\b\d+(?:st|nd|rd|th)?\s+(?:ed|edition)\.?\b', '', text, flags=re.IGNORECASE)
+    
+    # Remove reference markers like "Ref:", "Reference:", etc.
+    text = re.sub(r'\b[Rr]ef\.?:', '', text)
+    text = re.sub(r'\b[Rr]eference\.?:', '', text)
+    
+    # Remove extra whitespace and clean up
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Remove trailing dots and commas that might be left from removals
+    text = re.sub(r'[.,]\s*$', '', text).strip()
+    
+    return text
+
 # Chunking
+def ends_with_sentence_boundary(text: str) -> bool:
+    if not text:
+        return False
+    
+    # Strip trailing whitespace and check last character
+    text = text.rstrip()
+    if not text:
+        return False
+    
+    # Check for sentence-ending punctuation
+    return text[-1] in '.!?'
+
+
 def chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
-    """Character-based sliding window chunking."""
     if not text:
         return []
 
@@ -82,7 +139,7 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
 
     for start in range(0, len(text), step):
         chunk = text[start:start + chunk_size].strip()
-        if chunk:
+        if chunk and ends_with_sentence_boundary(chunk):
             chunks.append(chunk)
 
     return chunks
@@ -92,18 +149,44 @@ def create_chunked_rows(
     rows: List[Dict[str, Any]],
     chunk_size: int,
     overlap: int,
+    min_words_for_merge: int = 20,
 ) -> List[Dict[str, Any]]:
     chunked = []
+    total_chunks_created = 0
+    total_chunks_dropped = 0
+    total_chunks_merged = 0
 
     for row in rows:
         chunks = chunk_text(row["exp"], chunk_size, overlap)
-        for idx, chunk in enumerate(chunks):
+        total_chunks_created += len(chunks)
+        
+        # Filter chunks that don't end with sentence boundaries
+        valid_chunks = [chunk for chunk in chunks if ends_with_sentence_boundary(chunk)]
+        total_chunks_dropped += len(chunks) - len(valid_chunks)
+        
+        # Merge small tail chunks with previous chunk
+        if len(valid_chunks) > 1:
+            # Check if last chunk is small and should be merged
+            last_chunk = valid_chunks[-1]
+            last_chunk_words = len(last_chunk.split())
+            
+            if last_chunk_words < min_words_for_merge:
+                # Merge with previous chunk
+                prev_chunk = valid_chunks[-2]
+                merged_chunk = prev_chunk + " " + last_chunk
+                
+                # Replace the last two chunks with the merged one
+                valid_chunks = valid_chunks[:-2] + [merged_chunk]
+                total_chunks_merged += 1
+        
+        for idx, chunk in enumerate(valid_chunks):
             chunked.append({
                 **row,
                 "exp": chunk,
                 "chunk_idx": idx,
             })
 
+    print(f"    Chunking stats: {total_chunks_created} created, {total_chunks_dropped} dropped (incomplete), {total_chunks_merged} merged (small tails)")
     return chunked
 
 def embed_texts(
@@ -156,10 +239,10 @@ def ingest(
 
         collection.add(
             ids=[make_chunk_id(r) for r in batch],
-            documents=[r["exp"] for r in batch],
+            documents=[r["exp"] for r in batch],  # Evidence only - chunks read like textbook paragraphs
             embeddings=list(batch_embeddings),
             metadatas=[{
-                "question": r["question"],
+                "question": r["question"],  # Question stored in metadata only
                 "subject_name": r["subject_name"],
                 "topic_name": r["topic_name"],
                 "original_id": r["id"],
@@ -179,6 +262,7 @@ def main():
     parser.add_argument("--batch", type=int, default=EMBEDDING_BATCH_SIZE)
     parser.add_argument("--chunk_size", type=int, default=CHUNK_SIZE)
     parser.add_argument("--overlap", type=int, default=OVERLAP)
+    parser.add_argument("--min_words_merge", type=int, default=20, help="Minimum words for tail chunks before merging with previous")
     parser.add_argument("--device", default="cuda")
 
     args = parser.parse_args()
@@ -193,8 +277,8 @@ def main():
     print(f"    Loaded {len(rows)} passages")
 
     print("[2] Chunking")
-    chunked = create_chunked_rows(rows, args.chunk_size, args.overlap)
-    print(f"    Created {len(chunked)} chunks")
+    chunked = create_chunked_rows(rows, args.chunk_size, args.overlap, args.min_words_merge)
+    print(f"    Final result: {len(chunked)} valid chunks (ending with sentence boundaries)")
 
     print("[3] Embedding")
     embeddings = embed_texts(

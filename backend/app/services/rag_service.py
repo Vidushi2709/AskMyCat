@@ -59,6 +59,10 @@ class RAGService:
                 detect_conflicts=detect_conflicts
             )
             
+            logger.info(f"Pipeline returned result type: {type(result)}")
+            if result:
+                logger.info(f"Result keys: {list(result.keys())}")
+            
             # Add response time
             result["response_time_ms"] = (time.time() - start_time) * 1000
             
@@ -101,14 +105,21 @@ class RAGService:
         """Format pipeline result for API response"""
         # Extract gate results
         gates = []
-        if "gate_results" in result:
-            for gate_name, gate_data in result["gate_results"].items():
+        if result.get("gates"):
+            for gate_name, gate_data in result["gates"].items():
+                # Handle reasons as list or string
+                reasons = gate_data.get("reasons", gate_data.get("reason", []))
+                if isinstance(reasons, list):
+                    reason_str = "; ".join(reasons) if reasons else None
+                else:
+                    reason_str = reasons
+                
                 gates.append({
                     "gate_name": gate_name,
                     "passed": gate_data.get("passed", False),
-                    "score": gate_data.get("score", 0.0),
+                    "score": gate_data.get("score", gate_data.get("energy_score", 0.0)),
                     "threshold": gate_data.get("threshold", 0.0),
-                    "reason": gate_data.get("reason")
+                    "reason": reason_str
                 })
         
         # Format evidence passages
@@ -153,8 +164,9 @@ class RAGService:
         
         # Format contradictions
         contradictions = []
-        if result.get("contradictions", {}).get("has_contradictions"):
-            for conflict in result["contradictions"].get("conflicts", []):
+        contradictions_data = result.get("contradictions", {})
+        if contradictions_data and isinstance(contradictions_data, dict) and contradictions_data.get("has_contradictions"):
+            for conflict in contradictions_data.get("conflicts", []):
                 # Only add if all required fields are present and valid
                 passage1_idx = conflict.get("passage1_idx")
                 passage2_idx = conflict.get("passage2_idx")
@@ -176,6 +188,7 @@ class RAGService:
             "query": result.get("query", ""),
             "gate_status": result.get("gate_status", "unknown"),
             "gates": gates,
+            "gate_diagnostics": result.get("gate_diagnostics"),
             "answer": result.get("answer"),
             "follow_up_questions": result.get("follow_up_questions", []),
             "confidence": result.get("confidence", "unknown"),
