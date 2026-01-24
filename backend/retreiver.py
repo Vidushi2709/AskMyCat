@@ -7,7 +7,6 @@ logger = logging.getLogger("retriever")
 if not logger.hasHandlers():
     logging.basicConfig(level=logging.INFO)
 
-import os
 import argparse
 from typing import Any, Dict, List, Tuple
 from chromadb import PersistentClient
@@ -21,45 +20,149 @@ import hashlib
 import json
 from diskcache import Cache
 from datetime import datetime
-import sys
 from pathlib import Path
 import requests
+import numpy as np
 
-# Placeholder for extract_concepts if not imported elsewhere
-def extract_concepts(text):
-    # TODO: Replace with actual concept extraction logic
-    # For now, return an empty set to avoid errors
-    return set()
-
-# Placeholder for PubMed search functions
-def pubmed_search(query: str, max_results: int = 5, years: int = 2) -> List[str]:
-    """Placeholder PubMed search function. Returns empty list for now."""
-    logger.warning("PubMed search not implemented - returning empty results")
-    return []
-
-def pubmed_fetch_abstracts(pmids: List[str]) -> List[Dict[str, Any]]:
-    """Placeholder PubMed abstract fetch function. Returns empty list for now."""
-    logger.warning("PubMed abstract fetch not implemented - returning empty results")
-    return []
-
-# Import config constants
 from config import (
     MODEL_NAME, CHROMA_PATH, CHROMA_COLLECTION_NAME, RANKING_SCORER_CKPT, VERIFICATION_SCORER_CKPT, CACHE_DIR, THRESHOLDS
 )
+
+def pubmed_search(query: str, max_results: int = 5, years: int = 2) -> List[str]:
+    try:
+        import time
+        from datetime import datetime
+
+        # Calculate date range
+        current_year = datetime.now().year
+        start_year = current_year - years
+
+        # Build PubMed query
+        pubmed_query = f"({query}) AND ({start_year}[Date - Publication]:{current_year}[Date - Publication])"
+
+        # PubMed E-utilities base URL
+        base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+        search_url = f"{base_url}esearch.fcgi"
+
+        params = {
+            "db": "pubmed",
+            "term": pubmed_query,
+            "retmax": max_results,
+            "retmode": "json",
+            "sort": "relevance"
+        }
+
+        response = requests.get(search_url, params=params, timeout=10)
+        response.raise_for_status()
+
+        data = response.json()
+        pmids = data.get("esearchresult", {}).get("idlist", [])
+
+        logger.info(f"PubMed search for '{query}' returned {len(pmids)} results")
+        return pmids
+
+    except Exception as e:
+        logger.error(f"PubMed search failed: {e}")
+        return []
+
+def pubmed_fetch_abstracts(pmids: List[str]) -> List[Dict[str, Any]]:
+    if not pmids:
+        return []
+
+    try:
+        # PubMed E-utilities base URL
+        base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+        fetch_url = f"{base_url}efetch.fcgi"
+
+        # Fetch in batches of 10 to avoid API limits
+        all_abstracts = []
+        batch_size = 10
+
+        for i in range(0, len(pmids), batch_size):
+            batch_pmids = pmids[i:i+batch_size]
+            pmids_str = ",".join(batch_pmids)
+
+            params = {
+                "db": "pubmed",
+                "id": pmids_str,
+                "retmode": "xml",
+                "rettype": "abstract"
+            }
+
+            response = requests.get(fetch_url, params=params, timeout=15)
+            response.raise_for_status()
+
+            # Parse XML response
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(response.text)
+
+            for article in root.findall(".//PubmedArticle"):
+                try:
+                    # Extract PMID
+                    pmid_elem = article.find(".//PMID")
+                    pmid = pmid_elem.text if pmid_elem is not None else "Unknown"
+
+                    # Extract title
+                    title_elem = article.find(".//ArticleTitle")
+                    title = title_elem.text if title_elem is not None else "Unknown Title"
+
+                    # Extract publication year
+                    year_elem = article.find(".//PubDate/Year")
+                    year = year_elem.text if year_elem is not None else "Unknown"
+
+                    # Extract abstract
+                    abstract_elem = article.find(".//AbstractText")
+                    abstract = abstract_elem.text if abstract_elem is not None else ""
+
+                    if abstract and len(abstract.strip()) > 50:  # Only include substantial abstracts
+                        all_abstracts.append({
+                            "pmid": pmid,
+                            "title": title,
+                            "year": year,
+                            "abstract": abstract.strip()
+                        })
+
+                except Exception as e:
+                    logger.warning(f"Failed to parse PubMed article: {e}")
+                    continue
+
+            # Rate limiting
+            import time
+            time.sleep(0.5)
+
+        logger.info(f"Successfully fetched {len(all_abstracts)} PubMed abstracts")
+        return all_abstracts
+
+    except Exception as e:
+        logger.error(f"PubMed abstract fetch failed: {e}")
+        return []
+
+def extract_concepts(text: str) -> set:
+    """Extract medical concepts from text (disease, organ, mechanism)."""
+    concepts = set()
+    text_lower = text.lower()
+    
+    # Disease-related keywords
+    disease_keywords = ['disease', 'condition', 'disorder', 'syndrome', 'illness', 'pathology', 'diagnosis']
+    if any(kw in text_lower for kw in disease_keywords):
+        concepts.add('disease')
+    
+    # Organ/system keywords
+    organ_keywords = ['heart', 'kidney', 'liver', 'lung', 'brain', 'organ', 'tissue', 'system', 'cardiac', 'renal', 'hepatic', 'pulmonary', 'neurological']
+    if any(kw in text_lower for kw in organ_keywords):
+        concepts.add('organ')
+    
+    # Mechanism/pathway keywords
+    mechanism_keywords = ['mechanism', 'pathway', 'process', 'cause', 'effect', 'treatment', 'therapy', 'intervention', 'management', 'prevention']
+    if any(kw in text_lower for kw in mechanism_keywords):
+        concepts.add('mechanism')
+    
+    return concepts
 
 # Setup logger
 logger = logging.getLogger("retriever")
 if not logger.hasHandlers():
     logging.basicConfig(level=logging.INFO)
-
-# Placeholder for extract_concepts if not imported elsewhere
-def extract_concepts(text):
-    # TODO: Replace with actual concept extraction logic
-    # For now, return an empty set to avoid errors
-    return set()
-
-
-# ...existing code replaced by improved version provided by user...
 
 # Ranking model (from train.ipynb)
 class RankingScorer(nn.Module):
@@ -149,18 +252,21 @@ class RetrievalPipeline:
         
         # Initialize tokenizer and encoder
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        encoder = AutoModel.from_pretrained(model_name)
+        
+        # Load separate encoders for ranking and verification to avoid device issues
+        ranking_encoder = AutoModel.from_pretrained(model_name).to(self.device)
+        verification_encoder = AutoModel.from_pretrained(model_name).to(self.device)
         
         # Load ranking scorer
-        self.ranking_model = RankingScorer(encoder, embedding_dim=config.THRESHOLDS["embedding_dim"]).to(device)
+        self.ranking_model = RankingScorer(ranking_encoder, embedding_dim=config.THRESHOLDS["embedding_dim"]).to(self.device)
         # Use weights_only=True to avoid loading arbitrary pickled objects
-        self.ranking_model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+        self.ranking_model.load_state_dict(torch.load(checkpoint_path, map_location=self.device, weights_only=True))
         self.ranking_model.eval()
         logger.info(f"Loaded ranking model from {checkpoint_path}")
         
         # Load verification scorer (separate model for verification)
-        self.verification_model = RankingScorer(encoder, embedding_dim=config.THRESHOLDS["embedding_dim"]).to(device)
-        self.verification_model.load_state_dict(torch.load(verification_checkpoint_path, map_location=device, weights_only=True))
+        self.verification_model = RankingScorer(verification_encoder, embedding_dim=config.THRESHOLDS["embedding_dim"]).to(self.device)
+        self.verification_model.load_state_dict(torch.load(verification_checkpoint_path, map_location=self.device, weights_only=True))
         self.verification_model.eval()
         logger.info(f"Loaded verification model from {verification_checkpoint_path}")
         
@@ -243,7 +349,6 @@ class RetrievalPipeline:
     
     def rerank_passages(self, query: str, passages: List[str], metadatas: List[Dict[str, Any]],
                        max_len: int = None, batch_size: int = None) -> List[Tuple[str, Dict, float]]:
-        """Rerank passages using the trained ranking model."""
         if max_len is None:
             max_len = config.THRESHOLDS["rerank_max_len"]
         if batch_size is None:
@@ -344,10 +449,6 @@ class RetrievalPipeline:
     
     def filter_by_medical_keyword(self, ranked_passages: List[Tuple[str, Dict, float]], 
                                  user_query: str) -> List[Tuple[str, Dict, float]]:
-        """
-        Filter passages to ensure they contain medical keywords from the query.
-        This helps ensure relevance for medical queries.
-        """
         if not ranked_passages:
             return ranked_passages
             
@@ -372,9 +473,6 @@ class RetrievalPipeline:
             if any(term in passage_lower for term in relevant_terms):
                 filtered.append((passage, meta, score))
         
-        # If no passages match, return original (don't filter everything out)
-        return filtered if filtered else ranked_passages
-    
     def prepare_for_llm(self, filtered_passages: List[Tuple[str, Dict, float]]) -> str:
         if not filtered_passages:
             return "meow meow, no relevant evidence found."
@@ -398,108 +496,84 @@ class RetrievalPipeline:
 
         return "\n\n".join(context_parts)
     
-    # gate 1: query quality check
-    def gate_1_query_quality(self, user_query: str, threshold: float = None) -> Dict[str, Any]:
-        if threshold is None:
-            threshold = config.THRESHOLDS["gate1"]
-        logger.info("Gate 1: Checking query quality...")
+    def energy_aware_filtering(self, ranked_passages, energies, query):
+        # Combine similarity + energy into unified score
+        combined_scores = []
+        for (passage, metadata, similarity), energy in zip(ranked_passages, energies):
+            # Energy-weighted score: balance relevance (similarity) with quality (1-energy)
+            # Lower energy = higher quality, so we use (1-energy)
+            alpha = 0.6  # Weight for similarity
+            beta = 0.4   # Weight for energy quality
+            unified_score = alpha * similarity + beta * (1 - energy)
+            
+            combined_scores.append({
+                'passage': passage,
+                'metadata': metadata,
+                'similarity': similarity,
+                'energy': energy,
+                'unified_score': unified_score,
+                'quality_tier': self._classify_energy_tier(energy)
+            })
         
-        # Simple heuristics for query quality
-        energy_score = 1.0
-        reasons = []
+        # Sort by unified score (best first)
+        combined_scores.sort(key=lambda x: x['unified_score'], reverse=True)
         
-        # Check query length
-        if len(user_query.strip()) < 10:
-            energy_score -= 0.3
-            reasons.append("Query is too short")
+        # ENERGY-BASED ADAPTIVE THRESHOLDING
+        # Find the "energy gap" - where quality drops significantly
+        energy_threshold = self._find_energy_gap(combined_scores)
         
-        # Check if it's a question or statement
-        question_words = ['what', 'why', 'how', 'when', 'where', 'which', 'who', 'can', 'should', 'is', 'are', 'does']
-        has_question = any(word in user_query.lower().split()[:5] for word in question_words) or '?' in user_query
-        if not has_question:
-            energy_score -= 0.2
-            reasons.append("Query doesn't appear to be a clear question")
+        # Filter: Keep passages above energy threshold
+        high_quality = [
+            p for p in combined_scores 
+            if p['energy'] <= energy_threshold  # Lower energy = better
+        ]
         
-        # Check for overly broad queries
-        broad_words = ['everything', 'anything', 'all about', 'tell me about', 'explain']
-        if any(word in user_query.lower() for word in broad_words):
-            energy_score -= 0.1
-            reasons.append("Query may be too broad")
+        # Guarantee minimum evidence (take top 3 even if energy is high)
+        if len(high_quality) < 3:
+            high_quality = combined_scores[:3]
         
-        # Check for multiple questions
-        if user_query.count('?') > 1:
-            energy_score -= 0.15
-            reasons.append("Multiple questions detected - consider asking separately")
+        logger.info(f"Energy filtering: {len(high_quality)}/{len(combined_scores)} passages "
+                    f"passed threshold {energy_threshold:.3f}")
         
-        passed = energy_score >= threshold
-        
-        result = {
-            "gate": "query_quality",
-            "passed": passed,
-            "energy_score": max(0.0, energy_score),
-            "threshold": threshold,
-            "reasons": reasons if not passed else ["Query appears clear and specific"],
-            "action": "proceed" if passed else "reject"
-        }
-        
-        if passed:
-            logger.info(f"Gate 1 PASSED: Query quality = {result['energy_score']:.2f}")
+        return high_quality, energy_threshold
+
+    def _classify_energy_tier(self, energy: float) -> str:
+        # Remember: energy is normalized [0,1], lower = better
+        if energy <= 0.3:
+            return "GOLD"      # High-quality clinical evidence
+        elif energy <= 0.5:
+            return "SILVER"    # Good quality, usable
+        elif energy <= 0.7:
+            return "BRONZE"    # Moderate quality
         else:
-            logger.warning(f"Gate 1 FAILED: Query quality = {result['energy_score']:.2f} (threshold: {threshold})")
+            return "WEAK"      # Low quality, use with caution
+
+    def _find_energy_gap(self, scored_passages, min_gap=0.15):
+        if len(scored_passages) < 2:
+            return 0.5  # Default
         
-        return result
-    
-    # gate 2: retrieval sufficiency check 
-    def gate_2_retrieval_sufficiency(self, query: str, retrieved_chunks: List[Dict[str, Any]], threshold: float = None) -> Tuple[bool, Dict[str, Any], List[Dict[str, Any]]]:
-        if threshold is None:
-            threshold = config.THRESHOLDS["gate2"]
-        logger.info("Gate 2: Checking retrieval sufficiency...")
+        energies = [p['energy'] for p in scored_passages]
         
-        # Get top passages by similarity (no energy/confidence filtering here)
-        strong = sorted(retrieved_chunks, key=lambda x: x["similarity"], reverse=True)
+        # Find largest consecutive gap
+        max_gap = 0
+        gap_index = 0
         
-        # Apply similarity threshold to get strong evidence
-        threshold = max(0.4, config.THRESHOLDS["sim_threshold"] - 0.1)  # Dynamic threshold
-        strong = [c for c in strong if c["similarity"] >= threshold][:10]  # Top 10 max
+        for i in range(len(energies) - 1):
+            gap = abs(energies[i+1] - energies[i])
+            if gap > max_gap:
+                max_gap = gap
+                gap_index = i
         
-        # Guarantee minimum evidence (fallback to top-3 if threshold too strict)
-        if len(strong) < 3:
-            strong = sorted(retrieved_chunks, key=lambda x: x["similarity"], reverse=True)[:3]
+        # If no significant gap found, use median
+        if max_gap < min_gap:
+            return sorted(energies)[len(energies)//2]
         
-        # BINARY CHECKS: Count and Coverage only
-        count_ok = len(strong) >= config.THRESHOLDS["min_strong_evidence"]
-        covered_concepts = self._get_covered_concepts(strong)
-        coverage = len(covered_concepts) / 3.0  # disease, organ, mechanism
-        coverage_ok = coverage >= config.THRESHOLDS["min_coverage"]
+        # Threshold = energy level after the gap
+        threshold = energies[gap_index]
+        logger.info(f"Energy gap detected: {max_gap:.3f} at index {gap_index}")
         
-        # PURELY BINARY: Pass if count is sufficient OR if we have lots of evidence (bypass coverage)
-        # This allows queries with many strong evidence pieces to pass even if concept extraction is incomplete
-        passed = count_ok and (coverage_ok or len(strong) >= 5)
-        
-        gate_info = {
-            "gate": "retrieval_sufficiency",
-            "passed": passed,
-            "energy_score": 1.0 if passed else 0.0,  # Binary: 1.0 for sufficient, 0.0 for insufficient
-            "threshold": threshold,
-            "num_strong_evidence": len(strong),
-            "count_ok": count_ok,
-            "coverage_ok": coverage_ok,
-            "coverage": round(coverage, 2),  # Keep for error messages
-            "covered_concepts": list(self._get_covered_concepts(strong)),
-            "thresholds": {
-                "similarity": config.THRESHOLDS["sim_threshold"],
-                "min_strong_evidence": config.THRESHOLDS["min_strong_evidence"],
-                "min_coverage": config.THRESHOLDS["min_coverage"]
-            }
-        }
-        
-        if passed:
-            logger.info(f"Gate 2 PASSED: {len(strong)} strong evidence, sufficient for answer")
-        else:
-            logger.warning(f"Gate 2 FAILED: {len(strong)} strong evidence, insufficient for answer")
-        
-        return passed, gate_info, strong
-    
+        return threshold
+          
     def _check_concept_coverage(self, chunks: List[Dict[str, Any]]) -> bool:
         """Check if chunks cover required medical concepts."""
         covered_concepts = self._get_covered_concepts(chunks)
@@ -512,86 +586,282 @@ class RetrievalPipeline:
         for c in chunks:
             covered_concepts |= extract_concepts(c["text"])
         return covered_concepts
-    
-    # gate 3: evidence consistency check
-    def gate_3_evidence_consistency(self, filtered_passages: List[Tuple[str, Dict, float]], 
-                                   threshold: float = None) -> Dict[str, Any]:
-        if threshold is None:
-            threshold = config.THRESHOLDS["gate3"]
-        logger.info("Gate 3: Checking evidence consistency...")
+            
+    def energy_gate_2_retrieval_quality(self, passages_with_energy, query):
+        if not passages_with_energy:
+            return 0.0, {"reason": "No passages retrieved"}
         
-        energy_score = 1.0
-        reasons = []
+        energies = [p['energy'] for p in passages_with_energy]
         
-        # Check if we have enough high-quality evidence
-        if not filtered_passages or len(filtered_passages) == 0:
-            return {
-                "gate": "evidence_consistency",
-                "passed": False,
-                "energy_score": 0.0,
-                "threshold": threshold,
-                "reasons": ["No passages passed confidence threshold"],
-                "action": "reject"
-            }
+        # ENERGY LANDSCAPE METRICS
         
-        # Check number of filtered passages
-        if len(filtered_passages) < 2:
-            energy_score -= 0.4
-            reasons.append(f"Only {len(filtered_passages)} passage with sufficient confidence - CRITICAL")
-        elif len(filtered_passages) < 3:
-            energy_score -= 0.2
-            reasons.append(f"Limited evidence: {len(filtered_passages)} passages")
-        else:
-            reasons.append(f"Multiple sources: {len(filtered_passages)} passages")
+        # 1. Energy minimum (best evidence quality)
+        min_energy = min(energies)
         
-        # Check average similarity score
-        avg_similarity = sum(score for _, _, score in filtered_passages) / len(filtered_passages)
-        if avg_similarity < 0.5:
-            energy_score -= 0.3
-            reasons.append(f"Low average similarity ({avg_similarity:.2f})")
-        elif avg_similarity < 0.7:
-            energy_score -= 0.1
-            reasons.append(f"Moderate average similarity ({avg_similarity:.2f})")
-        else:
-            reasons.append(f"Strong similarity ({avg_similarity:.2f})")
+        # 2. Energy concentration (how many good passages?)
+        gold_tier_count = sum(1 for e in energies if e <= 0.3)
+        silver_tier_count = sum(1 for e in energies if 0.3 < e <= 0.5)
         
-        # Check score variance (high variance = inconsistent evidence)
-        if len(filtered_passages) > 1:
-            scores = [score for _, _, score in filtered_passages]
-            score_variance = sum((s - avg_similarity) ** 2 for s in scores) / len(scores)
-            if score_variance > 0.1:
-                energy_score -= 0.15
-                reasons.append("High score variance - evidence may be inconsistent")
+        # 3. Energy spread (consistency)
+        energy_std = np.std(energies) if len(energies) > 1 else 0
         
-        # Check if top passage is significantly better than others
-        if len(filtered_passages) > 1:
-            top_score = filtered_passages[0][2]
-            second_score = filtered_passages[1][2]
-            if top_score - second_score > 0.3:
-                energy_score -= 0.1
-                reasons.append("Large gap between top passages - confidence concentrated in one source")
+        # 4. Energy depth (top-k quality)
+        top5_avg_energy = np.mean(energies[:5])
         
-        passed = energy_score >= threshold
+        # COMPUTE CONFIDENCE SCORE
+        # Each component contributes to overall confidence
         
-        result = {
-            "gate": "evidence_consistency",
-            "passed": passed,
-            "energy_score": max(0.0, energy_score),
-            "threshold": threshold,
-            "reasons": reasons,
-            "action": "proceed" if passed else "reject",
-            "metrics": {
-                "num_passages": len(filtered_passages),
-                "avg_similarity": round(avg_similarity, 3)
-            }
+        # Component 1: Best evidence quality (40%)
+        quality_score = 1.0 - min_energy  # Lower energy = higher score
+        
+        # Component 2: Evidence breadth (30%)
+        breadth_score = min(1.0, (gold_tier_count + silver_tier_count) / 5.0)
+        
+        # Component 3: Consistency (20%)
+        consistency_score = 1.0 - min(1.0, energy_std / 0.3)  # Penalize high variance
+        
+        # Component 4: Top-k quality (10%)
+        topk_score = 1.0 - top5_avg_energy
+        
+        confidence = (
+            0.40 * quality_score +
+            0.30 * breadth_score +
+            0.20 * consistency_score +
+            0.10 * topk_score
+        )
+        
+        # Diagnostic info
+        gate_info = {
+            "confidence": round(confidence, 3),
+            "passed": confidence >= 0.5,  # Soft threshold
+            "energy_min": round(min_energy, 3),
+            "gold_tier_count": gold_tier_count,
+            "silver_tier_count": silver_tier_count,
+            "energy_std": round(energy_std, 3),
+            "top5_avg_energy": round(top5_avg_energy, 3),
+            "components": {
+                "quality": round(quality_score, 3),
+                "breadth": round(breadth_score, 3),
+                "consistency": round(consistency_score, 3),
+                "topk": round(topk_score, 3)
+            },
+            "interpretation": self._interpret_energy_landscape(
+                min_energy, gold_tier_count, energy_std
+            )
         }
         
-        if passed:
-            logger.info(f" Gate 3 PASSED: Evidence consistency = {result['energy_score']:.2f}")
-        else:
-            logger.warning(f" Gate 3 FAILED: Evidence consistency = {result['energy_score']:.2f} (threshold: {threshold})")
+        logger.info(f"🎯 Gate 2 Energy Confidence: {confidence:.3f}")
+        logger.info(f"   Energy landscape: min={min_energy:.3f}, "
+                    f"gold={gold_tier_count}, spread={energy_std:.3f}")
         
-        return result
+        return confidence, gate_info
+
+    def _interpret_energy_landscape(self, min_energy, gold_count, std):
+        interpretations = []
+        
+        if min_energy <= 0.2:
+            interpretations.append("✅ Excellent evidence quality detected")
+        elif min_energy <= 0.4:
+            interpretations.append("✓ Good evidence quality")
+        else:
+            interpretations.append("⚠️ Evidence quality concerns")
+        
+        if gold_count >= 3:
+            interpretations.append(f"✅ Strong evidence base ({gold_count} gold-tier sources)")
+        elif gold_count >= 1:
+            interpretations.append(f"✓ Moderate evidence ({gold_count} gold-tier)")
+        else:
+            interpretations.append("⚠️ No gold-tier evidence found")
+        
+        if std <= 0.15:
+            interpretations.append("✅ Consistent evidence quality")
+        elif std <= 0.25:
+            interpretations.append("✓ Acceptable quality variance")
+        else:
+            interpretations.append("⚠️ High quality variance - mixed evidence")
+        
+        return interpretations
+
+    def energy_gate_3_coherence(self, passages_with_energy):
+        if len(passages_with_energy) < 2:
+            return 0.5, {"reason": "Insufficient passages for coherence check"}
+        
+        energies = [p['energy'] for p in passages_with_energy]
+        
+        # Pairwise energy similarity
+        coherence_scores = []
+        for i in range(len(energies) - 1):
+            for j in range(i + 1, min(i + 4, len(energies))):  # Check neighbors
+                energy_diff = abs(energies[i] - energies[j])
+                coherence = 1.0 - min(1.0, energy_diff / 0.5)  # Normalize
+                coherence_scores.append(coherence)
+        
+        avg_coherence = np.mean(coherence_scores)
+        
+        # Energy-based consensus detection
+        # If most passages cluster at similar energy levels, coherence is high
+        energy_clusters = self._detect_energy_clusters(energies)
+        largest_cluster_pct = max(len(c) for c in energy_clusters) / len(energies)
+        
+        # Final coherence score
+        confidence = 0.6 * avg_coherence + 0.4 * largest_cluster_pct
+        
+        gate_info = {
+            "confidence": round(confidence, 3),
+            "passed": confidence >= 0.5,
+            "avg_pairwise_coherence": round(avg_coherence, 3),
+            "largest_cluster_pct": round(largest_cluster_pct, 3),
+            "num_clusters": len(energy_clusters),
+            "interpretation": (
+                "Strong consensus" if largest_cluster_pct >= 0.6 else
+                "Moderate agreement" if largest_cluster_pct >= 0.4 else
+                "Evidence fragmentation detected"
+            )
+        }
+        
+        logger.info(f"🎯 Gate 3 Energy Coherence: {confidence:.3f}")
+        
+        return confidence, gate_info
+
+    def _detect_energy_clusters(self, energies, threshold=0.15):
+        sorted_energies = sorted(energies)
+        clusters = []
+        current_cluster = [sorted_energies[0]]
+        
+        for energy in sorted_energies[1:]:
+            if energy - current_cluster[-1] <= threshold:
+                current_cluster.append(energy)
+            else:
+                clusters.append(current_cluster)
+                current_cluster = [energy]
+        
+        clusters.append(current_cluster)
+        return clusters
+    
+    def visualize_energy_landscape(self, passages_with_energy, query):
+        if not passages_with_energy:
+            return "No energy data to visualize"
+        
+        output = []
+        output.append("ENERGY LANDSCAPE ANALYSIS")
+        
+        energies = [p['energy'] for p in passages_with_energy]
+        
+        # Energy distribution histogram (ASCII)
+        output.append("Energy Distribution (lower = better quality):")
+        output.append("")
+        
+        # Bin energies into tiers
+        bins = {
+            'GOLD (0.0-0.3)': sum(1 for e in energies if e <= 0.3),
+            'SILVER (0.3-0.5)': sum(1 for e in energies if 0.3 < e <= 0.5),
+            'BRONZE (0.5-0.7)': sum(1 for e in energies if 0.5 < e <= 0.7),
+            'WEAK (0.7-1.0)': sum(1 for e in energies if e > 0.7)
+        }
+        
+        max_count = max(bins.values()) if bins.values() else 1
+        
+        for tier, count in bins.items():
+            bar_length = int((count / max_count) * 40) if max_count > 0 else 0
+            bar = '█' * bar_length
+            
+            # Color coding (using emojis since we're in terminal)
+            icon = {
+                'GOLD (0.0-0.3)': '🟢',
+                'SILVER (0.3-0.5)': '🔵',
+                'BRONZE (0.5-0.7)': '🟡',
+                'WEAK (0.7-1.0)': '🔴'
+            }.get(tier, '⚪')
+            
+            output.append(f"{icon} {tier:20s} [{count:2d}] {bar}")
+        
+        output.append("")
+        
+        # Key statistics
+        output.append("📊 Energy Statistics:")
+        output.append(f"   Best (min):     {min(energies):.3f}")
+        output.append(f"   Average:        {np.mean(energies):.3f}")
+        output.append(f"   Worst (max):    {max(energies):.3f}")
+        output.append(f"   Std Dev:        {np.std(energies):.3f}")
+        output.append(f"   Total passages: {len(energies)}")
+        output.append("")
+        
+        # Top passages ranked by energy
+        output.append("Top 5 Highest Quality (by energy):")
+        sorted_passages = sorted(passages_with_energy, key=lambda x: x['energy'])
+        
+        for i, p in enumerate(sorted_passages[:5], 1):
+            energy = p['energy']
+            tier = p['quality_tier']
+            similarity = p.get('similarity', 0)
+            
+            # Show passage preview
+            passage_preview = p['passage'][:80].replace('\n', ' ')
+            
+            tier_icon = {
+                'GOLD': 'G',
+                'SILVER': 'S',
+                'BRONZE': 'B',
+                'WEAK': 'W'
+            }.get(tier, 'U')
+            
+            output.append(f"\n{i}. {tier_icon} {tier} | Energy: {energy:.3f} | Similarity: {similarity:.3f}")
+            output.append(f"   \"{passage_preview}...\"")
+        
+        output.append("\n" + "="*80)
+        
+        # Interpretation
+        avg_energy = np.mean(energies)
+        gold_count = bins['GOLD (0.0-0.3)']
+        
+        if avg_energy <= 0.4 and gold_count >= 3:
+            assessment = "EXCELLENT - High-quality evidence base"
+            recommendation = "Proceed with high confidence"
+        elif avg_energy <= 0.5 and gold_count >= 1:
+            assessment = "GOOD - Sufficient quality for medical guidance"
+            recommendation = "Proceed with moderate confidence"
+        elif avg_energy <= 0.6:
+            assessment = "MODERATE - Quality concerns present"
+            recommendation = "Use with caution, verify key claims"
+        else:
+            assessment = "WEAK - Insufficient quality"
+            recommendation = "Recommend seeking additional sources"
+        
+        output.append(f"\n Overall Assessment: {assessment}")
+        output.append(f"   {recommendation}")
+        output.append("")
+        
+        return "\n".join(output)
+
+    def explain_energy_score(self, energy: float, tier: str) -> str:
+        explanations = {
+            'GOLD': (
+                "This evidence has EXCELLENT quality characteristics:\n"
+                "  • Strongly resembles peer-reviewed clinical evidence\n"
+                "  • Dense medical terminology and structured reporting\n"
+                "  • High confidence for medical decision support"
+            ),
+            'SILVER': (
+                "This evidence has GOOD quality:\n"
+                "  • Resembles clinical documentation or guidelines\n"
+                "  • Acceptable for general medical information\n"
+                "  • Moderate confidence for guidance"
+            ),
+            'BRONZE': (
+                "This evidence has MODERATE quality:\n"
+                "  • May be educational or general health content\n"
+                "  • Less formal structure than clinical evidence\n"
+                "  • Use as supporting information only"
+            ),
+            'WEAK': (
+                "This evidence has LOW quality:\n"
+                "  • May be fragmentary or low-information content\n"
+                "  • Does not strongly resemble clinical evidence\n"
+                "  • Not recommended for medical decisions"
+            )
+        }
+        
+        return f"Energy: {energy:.3f} [{tier}]\n{explanations.get(tier, 'Quality unknown')}"
     
     def compute_confidence(self, strong_evidence: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not strong_evidence:
@@ -612,12 +882,8 @@ class RetrievalPipeline:
         mean_sim = sum(similarities) / len(similarities)
         mean_energy = sum(energies) / len(energies)
         
-        # coverage again
-        covered_concepts = set()
-        for c in strong_evidence:
-            covered_concepts |= extract_concepts(c["text"])
-        
-        coverage = len(covered_concepts) / 3.0
+        # coverage (simplified - no concept extraction needed for energy-based approach)
+        coverage = 0.5  # Default moderate coverage for energy-based assessment
         n = len(strong_evidence)
         
         # confidence formula (using normalized energy scores where lower = better)
@@ -838,58 +1104,7 @@ class RetrievalPipeline:
             "severity": "moderate"
         }
         
-        if "gate1" in gate_status:
-            # Gate 1: Query quality issues
-            gate1_reasons = gate_results.get("gate1", {}).get("reasons", [])
-            
-            if any("too short" in r.lower() or "too vague" in r.lower() for r in gate1_reasons):
-                diagnosis["primary_issue"] = "Query Too Vague"
-                diagnosis["detailed_reason"] = "Your question lacks specific medical details needed to retrieve relevant evidence."
-                diagnosis["actionable_suggestions"] = [
-                    "Add specific symptoms, patient demographics (age/sex), or duration",
-                    "Example: Instead of 'chest pain', try 'acute chest pain in 55-year-old male with history of hypertension'",
-                    "Include relevant context: onset, severity, associated symptoms"
-                ]
-                diagnosis["alternative_approaches"] = [
-                    "Break your question into smaller, focused sub-questions",
-                    "Start with a broader search, then narrow based on findings"
-                ]
-                
-            elif any("multiple questions" in r.lower() for r in gate1_reasons):
-                diagnosis["primary_issue"] = "Multiple Questions Detected"
-                diagnosis["detailed_reason"] = "Your query contains multiple distinct questions that should be asked separately."
-                diagnosis["actionable_suggestions"] = [
-                    "Ask one focused question at a time for better results",
-                    "Prioritize your most important question first",
-                    "Each medical concern deserves separate analysis"
-                ]
-                diagnosis["alternative_approaches"] = [
-                    "Split into: 1) diagnostic question, 2) treatment question",
-                    "Consider using differential diagnosis mode (--ddx flag)"
-                ]
-                
-            elif any("broad" in r.lower() for r in gate1_reasons):
-                diagnosis["primary_issue"] = "Query Too Broad"
-                diagnosis["detailed_reason"] = "Your question is too general to provide specific, actionable medical guidance."
-                diagnosis["actionable_suggestions"] = [
-                    "Narrow your focus to a specific aspect (e.g., diagnosis, treatment, prognosis)",
-                    "Add patient-specific factors that affect management",
-                    "Specify which clinical context you're interested in"
-                ]
-                diagnosis["alternative_approaches"] = [
-                    "Use differential diagnosis mode for symptom clusters",
-                    "Focus on one decision point at a time"
-                ]
-            else:
-                diagnosis["primary_issue"] = "Query Unclear"
-                diagnosis["detailed_reason"] = "The query structure or phrasing makes it difficult to understand your medical question."
-                diagnosis["actionable_suggestions"] = [
-                    "Rephrase using standard medical terminology",
-                    "Structure as: Patient presentation → Clinical question",
-                    "Be explicit about what you want to know"
-                ]
-                
-        elif "gate2" in gate_status:
+        if "gate2" in gate_status:
             # Gate 2: Retrieval quality issues
             gate2_reasons = gate_results.get("gate2", {}).get("reasons", [])
             
@@ -1242,36 +1457,13 @@ Return valid JSON only, no markdown."""
         # Set default gate thresholds
         if gate_thresholds is None:
             gate_thresholds = {
-                "gate1": THRESHOLDS["gate1"],   # Query quality
                 "gate2": THRESHOLDS["gate2"],   # Retrieval quality  
                 "gate3": THRESHOLDS["gate3"]    # Evidence consistency
             }
         
         gate_results = {}
         
-        if enable_gates:
-            gate1_result = self.gate_1_query_quality(user_query, gate_thresholds["gate1"])
-            gate_results["gate1"] = gate1_result
-            
-            if not gate1_result["passed"]:
-                logger.warning("Gate 1 REJECTED - Stopping pipeline early")
-                diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate1")
-                return {
-                    "query": user_query,
-                    "gate_status": "rejected_at_gate1",
-                    "gates": gate_results,
-                    "retrieved_count": 0,
-                    "ranked_passages": [],
-                    "filtered_passages": [],
-                    "partial_evidence": [],  # No retrieval done yet
-                    "context": None,
-                    "answer": None,
-                    "rejection_reason": f"Query quality too low: {', '.join(gate1_result['reasons'])}",
-                    "suggestion": "Please rephrase your question to be more specific and clear.",
-                    "compute_saved": "Saved: retrieval + reranking + LLM",
-                    "confidence": "rejected",
-                    "diagnosis": diagnosis
-                }
+        # Skip Gate 1 (query quality check) - removed
         
         # Step 1: Retrieve
         passages, metadatas = self.retrieve_top_k(user_query, top_k)
@@ -1284,142 +1476,161 @@ Return valid JSON only, no markdown."""
         # Step 3: Compute energy scores
         ranked_passages = [p[0] for p in ranked]
         energies = self.compute_energy_scores(ranked_passages)
-        logger.info(f"[3/5] Computed energy scores for {len(energies)} passages")
+        logger.info(f"[3/6] Computed energy scores for {len(energies)} passages")
         
-        # Create retrieved_chunks for gate 2
-        retrieved_chunks = []
-        for i, ((passage, metadata, similarity), energy) in enumerate(zip(ranked, energies)):
-            retrieved_chunks.append({
-                "text": passage,
-                "similarity": similarity,
-                "energy": energy,
-                "metadata": metadata,
-                "rank": i + 1
+        # Step 4: Energy-aware filtering
+        high_quality, energy_threshold = self.energy_aware_filtering(ranked, energies, user_query)
+        logger.info(f"[4/6] Energy filtering: {len(high_quality)} high-quality passages")
+        
+        # Visualize energy landscape for user understanding
+        energy_visualization = self.visualize_energy_landscape(high_quality, user_query)
+        
+        # Create strong_evidence from energy-filtered results
+        strong_evidence = []
+        for i, item in enumerate(high_quality):
+            strong_evidence.append({
+                "text": item['passage'],
+                "similarity": item['similarity'],
+                "energy": item['energy'],
+                "metadata": item['metadata'],
+                "rank": i + 1,
+                "unified_score": item['unified_score'],
+                "quality_tier": item['quality_tier']
             })
-            logger.debug(f"Chunk {i+1}: sim={similarity:.3f}, energy={energy:.3f}")
         
-        # Initialize strong_evidence (either from gates or all chunks)
-        strong_evidence = retrieved_chunks  # Default to all chunks when gates disabled
+        # Save original strong evidence for fallback
+        original_strong_evidence = strong_evidence.copy()
         
         if enable_gates:
-            # Gate 2: Retrieval Sufficiency
-            gate2_passed, gate2_info, strong_evidence = self.gate_2_retrieval_sufficiency(user_query, retrieved_chunks, gate_thresholds["gate2"])
+            # ENERGY-BASED GATE 2: Quality Assessment Only
+            energy_confidence, energy_info = self.energy_gate_2_retrieval_quality(strong_evidence, user_query)
+            gate2_passed = energy_confidence >= 0.5
+            
+            # Format energy gate result to match expected structure
+            gate2_info = {
+                "gate": "energy_quality",
+                "passed": gate2_passed,
+                "energy_score": energy_confidence,
+                "threshold": 0.5,
+                "num_strong_evidence": len(strong_evidence),
+                "energy_confidence": energy_confidence,
+                "energy_landscape": energy_info,
+                "combined_score": energy_confidence,
+                "decision_factors": {
+                    "energy": round(energy_confidence, 3)
+                }
+            }
             gate_results["gate2"] = gate2_info
             
             if not gate2_passed:
                 logger.warning(" Gate 2 FAILED - Attempting PubMed fallback")
                 try:
                     pubmed_ids = pubmed_search(user_query, max_results=5, years=2)
-                    if pubmed_ids:
-                        pubmed_abstracts = pubmed_fetch_abstracts(pubmed_ids)
-                        logger.info(f"PubMed fallback: Retrieved {len(pubmed_abstracts)} abstracts")
-                        
-                        for abstract_data in pubmed_abstracts:
-                            chunks = self._chunk_text(abstract_data["abstract"], chunk_size=200)
-                            for chunk in chunks:
-                                passages.append(chunk)
-                                metadatas.append({
-                                    "source_type": "pubmed",
-                                    "pmid": abstract_data["pmid"],
-                                    "title": abstract_data["title"],
-                                    "year": abstract_data["year"],
-                                    "topic_name": "PubMed"
-                                })
-                        
-                        # Re-rerank with combined passages
+                    pubmed_abstracts = pubmed_fetch_abstracts(pubmed_ids) if pubmed_ids else []
+                    logger.info(f"PubMed fallback: Retrieved {len(pubmed_abstracts)} abstracts")
+                    
+                    # Always add PubMed data if available, even if empty
+                    for abstract_data in pubmed_abstracts:
+                        chunks = self._chunk_text(abstract_data["abstract"], chunk_size=200)
+                        for chunk in chunks:
+                            passages.append(chunk)
+                            metadatas.append({
+                                "source_type": "pubmed",
+                                "pmid": abstract_data["pmid"],
+                                "title": abstract_data["title"],
+                                "year": abstract_data["year"],
+                                "topic_name": "PubMed"
+                            })
+                    
+                    # Re-rerank with combined passages (always do this if we attempted PubMed)
+                    if pubmed_abstracts or pubmed_ids:  # If we got any PubMed response
                         ranked = self.rerank_passages(user_query, passages, metadatas)
                         energies = self.compute_energy_scores([p[0] for p in ranked])
                         
-                        # Update retrieved_chunks
-                        retrieved_chunks = []
-                        for i, ((passage, metadata, similarity), energy) in enumerate(zip(ranked, energies)):
-                            retrieved_chunks.append({
-                                "text": passage,
-                                "similarity": similarity,
-                                "energy": energy,
-                                "metadata": metadata,
-                                "rank": i + 1
+                        # Re-apply energy filtering
+                        high_quality, energy_threshold = self.energy_aware_filtering(ranked, energies, user_query)
+                        
+                        # Update strong_evidence
+                        strong_evidence = []
+                        for i, item in enumerate(high_quality):
+                            strong_evidence.append({
+                                "text": item['passage'],
+                                "similarity": item['similarity'],
+                                "energy": item['energy'],
+                                "metadata": item['metadata'],
+                                "rank": i + 1,
+                                "unified_score": item['unified_score'],
+                                "quality_tier": item['quality_tier']
                             })
                         
-                        # Re-run gate2
-                        gate2_passed, gate2_info, strong_evidence = self.gate_2_retrieval_sufficiency(user_query, retrieved_chunks, gate_thresholds["gate2"])
+                        # Re-run ENERGY GATE 2 on updated evidence
+                        energy_confidence, energy_info = self.energy_gate_2_retrieval_quality(strong_evidence, user_query)
+                        gate2_passed = energy_confidence >= 0.5
+                        
+                        gate2_info = {
+                            "gate": "energy_quality",
+                            "passed": gate2_passed,
+                            "energy_score": energy_confidence,
+                            "threshold": 0.5,
+                            "num_strong_evidence": len(strong_evidence),
+                            "energy_confidence": energy_confidence,
+                            "energy_landscape": energy_info,
+                            "combined_score": energy_confidence
+                        }
                         gate_results["gate2"] = gate2_info
                         
-                        if not gate2_passed:
-                            logger.warning(" Gate 2 STILL FAILED after PubMed - Stopping pipeline")
-                            diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate2")
-                            partial_evidence = [(passages[i], metadatas[i], 0.0) for i in range(min(3, len(passages)))]
-                            return {
-                                "query": user_query,
-                                "gate_status": "rejected_at_gate2",
-                                "gates": gate_results,
-                                "retrieved_count": len(passages),
-                                "ranked_passages": [],
-                                "filtered_passages": [],
-                                "partial_evidence": partial_evidence,
-                                "context": None,
-                                "answer": None,
-                                "rejection_reason": f"Retrieval sufficiency too low even after PubMed fallback: {gate2_info['num_strong_evidence']} strong evidence, {gate2_info['coverage']:.1%} coverage",
-                                "suggestion": "Insufficient evidence found. This may require specialized medical consultation.",
-                                "compute_saved": "Saved: reranking + LLM",
-                                "confidence": "rejected",
-                                "diagnosis": diagnosis,
-                                "gate_diagnostics": gate2_info
-                            }
-                    else:
-                        logger.warning("No PubMed results - rejecting")
-                        diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate2")
-                        partial_evidence = [(passages[i], metadatas[i], 0.0) for i in range(min(3, len(passages)))]
-                        return {
-                            "query": user_query,
-                            "gate_status": "rejected_at_gate2",
-                            "gates": gate_results,
-                            "retrieved_count": len(passages),
-                            "ranked_passages": [],
-                            "filtered_passages": [],
-                            "partial_evidence": partial_evidence,
-                            "context": None,
-                            "answer": None,
-                            "rejection_reason": f"Retrieval sufficiency too low: {gate2_info['num_strong_evidence']} strong evidence, {gate2_info['coverage']:.1%} coverage",
-                            "suggestion": "Insufficient evidence found. This may require specialized medical consultation.",
-                            "compute_saved": "Saved: reranking + LLM",
-                            "confidence": "rejected",
-                            "diagnosis": diagnosis,
-                            "gate_diagnostics": gate2_info
-                        }
                 except Exception as e:
-                    logger.warning(f"PubMed fallback failed: {e} - rejecting")
-                    diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate2")
-                    partial_evidence = [(passages[i], metadatas[i], 0.0) for i in range(min(3, len(passages)))]
-                    return {
-                        "query": user_query,
-                        "gate_status": "rejected_at_gate2",
-                        "gates": gate_results,
-                        "retrieved_count": len(passages),
-                        "ranked_passages": [],
-                        "filtered_passages": [],
-                        "partial_evidence": partial_evidence,
-                        "context": None,
-                        "answer": None,
-                        "rejection_reason": f"Retrieval sufficiency too low: {gate2_info['num_strong_evidence']} strong evidence, {gate2_info['coverage']:.1%} coverage",
-                        "suggestion": "Insufficient evidence found. This may require specialized medical consultation.",
-                        "compute_saved": "Saved: reranking + LLM",
-                        "confidence": "rejected",
-                        "diagnosis": diagnosis,
-                        "gate_diagnostics": gate2_info
-                    }
+                    logger.error(f"PubMed fallback failed: {e}")
+                    # Continue with original evidence if PubMed fails
+                    strong_evidence = original_strong_evidence[:3]  # Take top 3 as fallback
+        else:
+            gate_results = None
         
         # Compute confidence from strong evidence
         confidence = self.compute_confidence(strong_evidence)
-        logger.info(f"[4/6] Confidence: {confidence['label']} ({confidence['score']:.3f})")
+        logger.info(f"[5/6] Confidence: {confidence['label']} ({confidence['score']:.3f})")
         
-        # Step 4: Filter (using strong evidence as filtered)
+        # Step 6: Filter (using strong evidence as filtered)
         filtered = [(c["text"], c["metadata"], c["similarity"]) for c in strong_evidence]
-        logger.info(f"[5/6] Using {len(filtered)} strong evidence passages")
+        logger.info(f"[6/6] Using {len(filtered)} strong evidence passages")
         
         if enable_gates:
-            gate3_result = self.gate_3_evidence_consistency(filtered, gate_thresholds["gate3"])
-            gate_results["gate3"] = gate3_result
+            # ENERGY-BASED COHERENCE CHECK ONLY
+            if len(strong_evidence) >= 2:
+                energy_coherence, coherence_info = self.energy_gate_3_coherence(strong_evidence)
+                
+                # Format energy coherence result to match gate3 structure
+                gate3_result = {
+                    "gate": "energy_coherence",
+                    "passed": coherence_info["passed"],
+                    "energy_score": energy_coherence,
+                    "threshold": 0.5,  # Energy coherence threshold
+                    "reasons": [coherence_info["interpretation"]],
+                    "action": "proceed" if coherence_info["passed"] else "reject",
+                    "metrics": {
+                        "num_passages": len(strong_evidence),
+                        "avg_pairwise_coherence": coherence_info["avg_pairwise_coherence"],
+                        "largest_cluster_pct": coherence_info["largest_cluster_pct"]
+                    },
+                    "energy_coherence": energy_coherence,
+                    "coherence_info": coherence_info,
+                    "combined_score": energy_coherence
+                }
+                gate_results["gate3"] = gate3_result
+            else:
+                # Not enough evidence for coherence check
+                gate3_result = {
+                    "gate": "energy_coherence",
+                    "passed": False,
+                    "energy_score": 0.0,
+                    "threshold": 0.5,
+                    "reasons": ["Insufficient passages for coherence analysis"],
+                    "action": "reject",
+                    "metrics": {"num_passages": len(strong_evidence)},
+                    "combined_score": 0.0
+                }
+                gate_results["gate3"] = gate3_result
+                logger.info(f"🎯 Gate 3 Combined: {combined_consistency:.3f} (traditional: {gate3_result['energy_score']:.3f}, coherence: {energy_coherence:.3f})")
             
             if not gate3_result["passed"]:
                 logger.warning(" Gate 3 FAILED - Attempting PubMed fallback")
@@ -1464,10 +1675,9 @@ Return valid JSON only, no markdown."""
         if enable_gates:
             logger.info("All gates PASSED - Proceeding to LLM")
             
-            # Calculate overall energy score
-            overall_energy = (gate_results["gate1"]["energy_score"] + 
-                            gate_results["gate2"]["energy_score"] + 
-                            gate_results["gate3"]["energy_score"]) / 3
+            # Calculate overall energy score (gates 2 and 3 only)
+            overall_energy = (gate_results["gate2"]["energy_score"] + 
+                            gate_results["gate3"]["energy_score"]) / 2
             logger.info(f"Overall energy score: {overall_energy:.2f}")
         else:
             overall_energy = 1.0  # Gates disabled
@@ -1519,7 +1729,8 @@ Return valid JSON only, no markdown."""
                 "num_sources": len(filtered),
                 "avg_similarity": round(avg_similarity, 3),
                 "topics": topics,
-            }
+            },
+            "energy_visualization": energy_visualization
         }
         
         if use_llm and filtered:
@@ -1553,6 +1764,132 @@ Return valid JSON only, no markdown."""
             logger.info(f"[5/6] Skipping LLM (use_llm={use_llm}, filtered={len(filtered)>0})")
         
         logger.info(f"About to return result with keys: {list(result.keys()) if result else 'None'}")
+        return result
+    
+    def answer_query_energy_first(self, user_query: str, top_k: int = 20, 
+                                   visualize: bool = True) -> Dict[str, Any]:
+        logger.info("="*80)
+        logger.info(f"Query: {user_query}")
+        logger.info("ENERGY-FIRST PIPELINE")
+        logger.info("="*80)
+        
+        # Step 1: Retrieve more candidates for better energy landscape
+        passages, metadatas = self.retrieve_top_k(user_query, top_k=top_k)
+        logger.info(f"[1/6] Retrieved {len(passages)} candidates")
+        
+        # Step 2: Rerank by semantic similarity
+        ranked = self.rerank_passages(user_query, passages, metadatas)
+        logger.info(f"[2/6] Reranked passages")
+        
+        # Step 3: Compute energy scores (THE CORE)
+        ranked_passages = [p[0] for p in ranked]
+        energies = self.compute_energy_scores(ranked_passages)
+        logger.info(f"[3/6] 🔋 Computed energy landscape")
+        
+        # Combine all metrics
+        passages_with_energy = []
+        for (passage, metadata, similarity), energy in zip(ranked, energies):
+            passages_with_energy.append({
+                'passage': passage,
+                'metadata': metadata,
+                'similarity': similarity,
+                'energy': energy,
+                'quality_tier': self._classify_energy_tier(energy),
+                'unified_score': 0.6 * similarity + 0.4 * (1 - energy)
+            })
+        
+        # Step 4: ENERGY-BASED FILTERING (replaces arbitrary thresholds)
+        high_quality, energy_threshold = self.energy_aware_filtering(
+            ranked, energies, user_query
+        )
+        logger.info(f"[4/6] 🎯 Filtered to {len(high_quality)} high-quality passages "
+                    f"(energy ≤ {energy_threshold:.3f})")
+        
+        # Step 5: ENERGY GATES (continuous confidence scoring)
+        gate2_confidence, gate2_info = self.energy_gate_2_retrieval_quality(
+            passages_with_energy, user_query
+        )
+        
+        gate3_confidence, gate3_info = self.energy_gate_3_coherence(
+            high_quality
+        )
+        
+        # Combined gate confidence
+        overall_confidence = (gate2_confidence + gate3_confidence) / 2
+        
+        logger.info(f"[5/6] 🚦 Energy Gates:")
+        logger.info(f"      Gate 2 (Quality):   {gate2_confidence:.3f}")
+        logger.info(f"      Gate 3 (Coherence): {gate3_confidence:.3f}")
+        logger.info(f"      Overall:            {overall_confidence:.3f}")
+        
+        # Decision logic based on ENERGY confidence
+        proceed_to_llm = overall_confidence >= 0.5
+        
+        if not proceed_to_llm:
+            logger.warning(f"🛑 Energy confidence too low ({overall_confidence:.3f}) - rejecting query")
+            
+            return {
+                "query": user_query,
+                "status": "rejected_low_energy",
+                "energy_confidence": overall_confidence,
+                "gate2": gate2_info,
+                "gate3": gate3_info,
+                "energy_landscape": self.visualize_energy_landscape(
+                    passages_with_energy, user_query
+                ) if visualize else None,
+                "recommendation": self._get_rejection_recommendation(
+                    gate2_info, gate3_info
+                ),
+                "partial_evidence": high_quality[:3]  # Show what we found
+            }
+        
+        # Step 6: Prepare context and query LLM
+        filtered_passages = [
+            (p['passage'], p['metadata'], p['similarity']) 
+            for p in high_quality
+        ]
+        context = self.prepare_for_llm(filtered_passages)
+        
+        logger.info(f"[6/6] 💬 Querying LLM (confidence: {overall_confidence:.3f})")
+        answer, follow_ups = self.query_llm(user_query, context)
+        
+        # Build result with ENERGY metrics prominently
+        result = {
+            "query": user_query,
+            "status": "success",
+            "answer": answer,
+            "follow_up_questions": follow_ups,
+            
+            # ENERGY METRICS (the highlight!)
+            "energy_confidence": round(overall_confidence, 3),
+            "energy_landscape": self.visualize_energy_landscape(
+                passages_with_energy, user_query
+            ) if visualize else None,
+            "energy_threshold": round(energy_threshold, 3),
+            
+            # Gate details
+            "gates": {
+                "gate2_quality": gate2_info,
+                "gate3_coherence": gate3_info
+            },
+            
+            # Evidence
+            "evidence": {
+                "total_retrieved": len(passages),
+                "high_quality_count": len(high_quality),
+                "quality_breakdown": {
+                    'gold': sum(1 for p in passages_with_energy if p['quality_tier'] == 'GOLD'),
+                    'silver': sum(1 for p in passages_with_energy if p['quality_tier'] == 'SILVER'),
+                    'bronze': sum(1 for p in passages_with_energy if p['quality_tier'] == 'BRONZE'),
+                    'weak': sum(1 for p in passages_with_energy if p['quality_tier'] == 'WEAK')
+                },
+                "passages": filtered_passages
+            },
+            
+            # Context
+            "context": context
+        }
+        
         return result
     
     def query_llm(self, user_query: str, context: str, model: str = "openai/gpt-4o-mini", 
@@ -1592,7 +1929,6 @@ Return valid JSON only, no markdown."""
         - Supporting Citations: List which evidence items support each claim
         - Confidence Level: End with assessment (High/Medium/Low) based on evidence quality and consistency
         - Disclaimers: Note if evidence is limited or conflicting
-        - Follow-up Questions: Suggest 3-5 relevant follow-up questions the user might ask based on this topic
 
         IMPORTANT: Do NOT invent or assume information not explicitly in the evidence."""
         
@@ -1646,6 +1982,37 @@ At the end, add a section:
             self.cache.set(cache_key, result, expire=self.cache_ttl)
         
         return result
+    
+    def _get_rejection_recommendation(self, gate2_info, gate3_info):
+        recommendations = []
+        
+        # Diagnose gate 2 (quality) failures
+        if gate2_info['confidence'] < 0.5:
+            if gate2_info['gold_tier_count'] == 0:
+                recommendations.append(
+                    "No high-quality evidence found. "
+                    "Try reformulating with standard medical terminology."
+                )
+            if gate2_info['energy_min'] > 0.5:
+                recommendations.append(
+                    "All evidence has high energy (low quality). "
+                    "This topic may not be well-covered in the knowledge base."
+                )
+        
+        # Diagnose gate 3 (coherence) failures  
+        if gate3_info['confidence'] < 0.5:
+            if gate3_info['num_clusters'] > 3:
+                recommendations.append(
+                    "Evidence is fragmented across multiple quality levels. "
+                    "Sources may be discussing different aspects or have conflicting quality."
+                )
+        
+        if not recommendations:
+            recommendations.append(
+                "Consider consulting primary literature or clinical guidelines."
+            )
+        
+        return recommendations
     
     def generate_differential_diagnosis(self, user_query: str, top_k: int = None, 
                                        threshold: float = None, num_diagnoses: int = None) -> Dict[str, Any]:
