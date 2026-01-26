@@ -473,12 +473,19 @@ class RetrievalPipeline:
             if any(term in passage_lower for term in relevant_terms):
                 filtered.append((passage, meta, score))
         
-    def prepare_for_llm(self, filtered_passages: List[Tuple[str, Dict, float]]) -> str:
+    def prepare_for_llm(self, filtered_passages: List[Tuple[str, Dict, float]]) -> Tuple[str, List[Dict[str, Any]]]:
+        """Prepare context for LLM with structured sources.
+        
+        Returns:
+            Tuple of (context_string, sources_list)
+        """
         if not filtered_passages:
-            return "meow meow, no relevant evidence found."
+            return "No relevant evidence found.", []
 
         seen = set()
         deduped = []
+        sources = []
+        
         for passage, meta, score in filtered_passages:
             key = passage.strip().lower()
             if key in seen:
@@ -490,11 +497,25 @@ class RetrievalPipeline:
 
         context_parts = []
         for i, (passage, metadata, score) in enumerate(deduped, 1):
-            source = "PubMed" if metadata.get("source_type") == "pubmed" else "Local"
-            year = f" {metadata['year']}" if metadata.get("year") else ""
-            context_parts.append(f"[Evidence {i}] ({source}{year}, confidence: {score:.3f})\n{passage}")
+            # Add to context with citation number
+            context_parts.append(f"[{i}] {passage}")
+            
+            # Build source entry for LangChain toolcall
+            source_entry = {
+                "citation_number": i,
+                "title": metadata.get("title", f"Source {i}"),
+                "source_type": metadata.get("source_type", "Unknown"),
+                "year": metadata.get("year", "Unknown"),
+                "authors": metadata.get("authors", "Unknown"),
+                "url": metadata.get("url", ""),
+                "pmid": metadata.get("pmid", ""),
+                "confidence_score": round(score, 3),
+                "topic": metadata.get("topic_name", "General")
+            }
+            sources.append(source_entry)
 
-        return "\n\n".join(context_parts)
+        context = "\n\n".join(context_parts)
+        return context, sources
     
     def energy_aware_filtering(self, ranked_passages, energies, query):
         # Combine similarity + energy into unified score
@@ -1265,6 +1286,16 @@ class RetrievalPipeline:
         if len(filtered_passages) < 2:
             return {"has_contradictions": False, "conflicts": []}
         
+        # QUICK CHECK: If all passages are identical, no contradictions possible
+        passages_text = [p[0].strip().lower() for p in filtered_passages[:10]]
+        if len(set(passages_text)) == 1:
+            logger.info("All passages are identical - no contradictions possible")
+            return {
+                "has_contradictions": False,
+                "conflicts": [],
+                "note": "All evidence sources are identical"
+            }
+        
         logger.info("Analyzing sources for contradictions...")
         
         # Prepare evidence for LLM analysis
@@ -1281,50 +1312,64 @@ class RetrievalPipeline:
         evidence_text = "\n\n".join(evidence_list)
         
         # Use LLM to detect contradictions
-        system_prompt = """You are a medical evidence analysis expert specializing in detecting contradictions.
+        system_prompt = """You are a strict medical evidence analyzer. Your ONLY job is to detect REAL contradictions.
 
-TASK: Analyze medical evidence sources for contradictions, disagreements, or conflicting claims.
+CRITICAL RULES - YOU MUST FOLLOW THESE:
+1. ONLY report contradictions that ACTUALLY APPEAR in the provided evidence
+2. Do NOT fabricate, invent, or assume any claims not explicitly stated
+3. Do NOT make up conflicts about topics not mentioned
+4. Compare ONLY the exact text provided - no external knowledge
+5. If sources say the same thing (even with minor wording differences), there is NO contradiction
+6. Every conflict must quote EXACT TEXT from the evidence
 
-CRITICAL RULES:
-1. Compare specific claims (numbers, recommendations, dosages, guidelines)
-2. Identify substantive conflicts - not just different phrasings
-3. For each conflict, quote the exact conflicting statements
-4. Suggest possible reasons for disagreements (population differences, guideline updates, risk stratification)
-5. If no meaningful contradictions exist, clearly state that
+WHAT COUNTS AS A REAL CONTRADICTION:
+- Source A says "BP target <130/80" AND Source B says "BP target <140/90" (both topics in evidence)
+- Source A says "avoid sodium" AND Source B says "sodium is safe" (both in evidence)
+- Different dosages for the same drug (all in evidence)
 
-RESPONSE FORMAT (JSON):
+WHAT IS NOT A CONTRADICTION:
+- Similar information phrased differently
+- Same evidence repeated
+- Different detail levels (summary vs detailed)
+- My own assumptions about what the sources might disagree on
+
+RESPONSE FORMAT (JSON only):
+{
+  "has_contradictions": false,
+  "conflicts": [],
+  "note": "All sources say essentially the same thing" or "No contradictions found"
+}
+
+Or if real contradictions exist:
 {
   "has_contradictions": true,
   "conflicts": [
     {
-      "topic": "Blood pressure targets",
+      "topic": "Exact topic from evidence",
       "source_1": {
-        "claim": "Target BP <130/80",
-        "source_id": "Source 1 (AHA 2024)"
+        "claim": "Exact quote from Source 1",
+        "source_id": "Source 1"
       },
       "source_2": {
-        "claim": "Target BP <140/90", 
-        "source_id": "Source 2 (ESC 2023)"
+        "claim": "Exact quote from Source 2",
+        "source_id": "Source 2"
       },
-      "severity": "moderate",
-      "possible_reasons": [
-        "Different patient populations (US vs EU guidelines)",
-        "Different risk stratification approaches",
-        "Updated evidence in newer guideline"
-      ],
-      "recommendation": "Consider patient-specific factors including age, comorbidities, and risk profile"
+      "severity": "critical or moderate",
+      "explanation": "Why these contradict"
     }
-  ],
-  "overall_assessment": "Moderate conflicts found - guidelines differ on specific thresholds but agree on treatment principles"
+  ]
 }
 
-SEVERITY LEVELS:
-- "critical": Directly opposite recommendations (do vs don't)
-- "moderate": Numerical differences or timing variations
-- "minor": Different approaches to same goal"""
+REMEMBER: If you're not 100% certain a contradiction exists in the text, report has_contradictions: false"""
         
         user_prompt = f"""Query: {user_query}
-Return valid JSON only, no markdown."""
+
+EVIDENCE TO ANALYZE (analyze ONLY this text):
+{evidence_text}
+
+CRITICAL: Only report contradictions that appear in the evidence above.
+Do not make up claims or invent contradictions.
+Return valid JSON only."""
         
         try:
             response = self.llm_client.chat.completions.create(
@@ -1333,7 +1378,7 @@ Return valid JSON only, no markdown."""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.3  # Lower temperature for more consistent analysis
+                temperature=0.0  # Deterministic - no creativity/hallucinations
             )
             
             response_text = response.choices[0].message.content
@@ -1345,6 +1390,32 @@ Return valid JSON only, no markdown."""
                 contradiction_data = json.loads(json_match.group())
             else:
                 contradiction_data = json.loads(response_text)
+            
+            # DEFENSIVE CHECK: Verify contradictions actually exist in evidence
+            if contradiction_data.get("has_contradictions") and contradiction_data.get("conflicts"):
+                validated_conflicts = []
+                for conflict in contradiction_data["conflicts"]:
+                    source1_claim = conflict.get("source_1", {}).get("claim", "").lower()
+                    source2_claim = conflict.get("source_2", {}).get("claim", "").lower()
+                    
+                    # Check if both claims actually appear in the evidence
+                    evidence_lower = evidence_text.lower()
+                    claim1_in_evidence = source1_claim and source1_claim in evidence_lower
+                    claim2_in_evidence = source2_claim and source2_claim in evidence_lower
+                    
+                    if claim1_in_evidence and claim2_in_evidence:
+                        validated_conflicts.append(conflict)
+                    else:
+                        logger.warning(f"Filtered out hallucinated contradiction: {conflict.get('topic')}")
+                
+                # Update with only validated conflicts
+                if not validated_conflicts:
+                    logger.info("Contradiction detection: LLM reported conflicts but none validated")
+                    contradiction_data["has_contradictions"] = False
+                    contradiction_data["conflicts"] = []
+                    contradiction_data["note"] = "Initial conflicts reported by LLM were not found in actual evidence"
+                else:
+                    contradiction_data["conflicts"] = validated_conflicts
             
             # Transform conflicts to add passage indices
             if contradiction_data.get("conflicts"):
@@ -1630,14 +1701,15 @@ Return valid JSON only, no markdown."""
                     "combined_score": 0.0
                 }
                 gate_results["gate3"] = gate3_result
-                logger.info(f"🎯 Gate 3 Combined: {combined_consistency:.3f} (traditional: {gate3_result['energy_score']:.3f}, coherence: {energy_coherence:.3f})")
+                logger.info(f"🎯 Gate 3: Insufficient passages ({len(strong_evidence)}) for coherence check")
             
             if not gate3_result["passed"]:
                 logger.warning(" Gate 3 FAILED - Attempting PubMed fallback")
                 # PubMed fallback already done in gate2, so just reject
                 logger.warning(" Gate 3 STILL FAILED - Stopping pipeline")
                 diagnosis = self._diagnose_low_energy(gate_results, "rejected_at_gate3")
-                context = self.prepare_for_llm(filtered) if filtered else "No evidence passed threshold"
+                context_result = self.prepare_for_llm(filtered) if filtered else ("No evidence passed threshold", [])
+                context = context_result[0] if isinstance(context_result, tuple) else context_result
                 partial_evidence = filtered[:3] if filtered else []
                 return {
                     "query": user_query,
@@ -1697,7 +1769,12 @@ Return valid JSON only, no markdown."""
             confidence_level = "medium"
         
         # Step 4: LLM or context only
-        context = self.prepare_for_llm(filtered)
+        context_result = self.prepare_for_llm(filtered)
+        if isinstance(context_result, tuple):
+            context, sources_list = context_result
+        else:
+            context = context_result
+            sources_list = []
         
         # NEW: Detect contradictions if requested
         contradiction_data = None
@@ -1719,6 +1796,8 @@ Return valid JSON only, no markdown."""
             "filtered_passages": filtered,
             "strong_evidence": strong_evidence,
             "context": context,
+            "sources": sources_list,
+            "sources_display": self.format_sources_for_display(sources_list),
             "answer": None,
             "follow_up_questions": [],  # Initialize as empty list
             "answer_time": None,
@@ -1736,12 +1815,21 @@ Return valid JSON only, no markdown."""
         if use_llm and filtered:
             logger.info(f"[6/6] Querying LLM...")
             start_time = datetime.now()
-            llm_result = self.query_llm(user_query, context)
+            llm_result, sources_from_llm = self.query_llm(user_query, context)
             if llm_result is None:
                 logger.error("LLM query returned None")
                 answer, follow_up_questions = None, []
             else:
                 answer, follow_up_questions = llm_result
+            
+            # Update sources from LLM call if available
+            if sources_from_llm:
+                result["sources"] = sources_from_llm
+                result["sources_display"] = self.format_sources_for_display(sources_from_llm)
+            
+            result["answer"] = answer
+            result["follow_up_questions"] = follow_up_questions
+            result["answer_time"] = str(datetime.now() - start_time)
             end_time = datetime.now()
             result["answer"] = answer
             result["follow_up_questions"] = follow_up_questions
@@ -1896,59 +1984,58 @@ Return valid JSON only, no markdown."""
                   temperature: float = None) -> tuple:
         if temperature is None:
             temperature = THRESHOLDS["llm_temperature"]
+        
+        # Handle both old and new prepare_for_llm return format
+        if isinstance(context, tuple):
+            context_text, sources_list = context
+        else:
+            context_text = context
+            sources_list = []
+            
         if self.enable_cache:
-            cache_key = self._get_cache_key("llm", user_query, context, model, temperature)
+            cache_key = self._get_cache_key("llm", user_query, context_text, model, temperature)
             if cache_key in self.cache:
                 self.cache_stats["llm_hits"] += 1
                 cached_result = self.cache[cache_key]
                 if cached_result is not None:
-                    # Handle old cached format (just answer string) vs new format (tuple)
                     if isinstance(cached_result, tuple):
-                        return cached_result
+                        return cached_result, sources_list
                     else:
-                        # Old cache format - return with empty follow-up questions
-                        return cached_result, []
+                        return (cached_result, []), sources_list
                 else:
-                    # Cached None - treat as miss
                     self.cache_stats["llm_misses"] += 1
             self.cache_stats["llm_misses"] += 1
-        
-        system_prompt = """You are a medical evidence-based medicine (EBM) assistant.
 
-        CRITICAL RULES:
-        1. ONLY use information from the provided evidence - do not use external medical knowledge
-        2. If evidence is conflicting, acknowledge and explain the conflict
-        3. If evidence is insufficient, explicitly state: "I don't have enough evidence to answer confidently. 🐱💤"
-        4. Always cite which evidence you used (e.g., "[Evidence 1]", "[Evidence 2]")
-        5. Use clear medical terminology but explain complex terms for general audience
-        6. Structure answers for clarity: start with direct answer, then support with evidence
+        # Enhanced system prompt: warm, professional, efficient, and focused on clarity
+        system_prompt = (
+            "You are a warm, professional, and efficient medical assistant. Your goal is to provide clear, "
+            "evidence-based answers that help users understand their health questions.\n\n"
+            "PRINCIPLES:\n"
+            "1. Be warm and supportive in tone - imagine speaking with a trusted healthcare provider\n"
+            "2. Be precise and concise - avoid unnecessary jargon or lengthy explanations\n"
+            "3. Cite sources using [1], [2], etc. notation - never invent information\n"
+            "4. If uncertain, say so kindly and suggest where to learn more\n"
+            "5. Focus on practical, actionable information the user can understand\n\n"
+            "EVIDENCE-BASED FILTER:\n"
+            "- Only use information from the provided sources\n"
+            "- Do not add medical knowledge outside the given context\n"
+            "- This prevents hallucinations while maintaining useful, direct answers\n\n"
+            "OUTPUT FORMAT:\n"
+            "- Start with a direct, warm answer\n"
+            "- Use citations [1], [2], etc. for specific claims\n"
+            "- Keep paragraphs short and scannable\n"
+            "- End with follow-up questions the user might want to explore"
+        )
 
-        RESPONSE FORMAT:
-        - Opening: Direct, evidence-based answer to the question
-        - Body: Detailed explanation with specific evidence citations
-        - Supporting Citations: List which evidence items support each claim
-        - Confidence Level: End with assessment (High/Medium/Low) based on evidence quality and consistency
-        - Disclaimers: Note if evidence is limited or conflicting
+        user_prompt = (
+            f"QUESTION: {user_query}\n\n"
+            f"EVIDENCE:\n{context_text}\n\n"
+            f"Please provide a warm, clear, and professional answer based only on the evidence above.\n"
+            f"Cite sources as [1], [2], etc. when making specific claims.\n"
+            f"If you cannot answer with confidence, explain why gently and suggest what information would help.\n\n"
+            f"After your answer, provide 3-4 follow-up questions the user might want to explore next."
+        )
 
-        IMPORTANT: Do NOT invent or assume information not explicitly in the evidence."""
-        
-        user_prompt = f"""Medical Question: {user_query}
-
-Available Evidence:
-{context}
-
-Please provide a comprehensive, evidence-based answer following the critical rules above.
-Make sure to cite specific evidence items and provide a confidence assessment.
-
-At the end, add a section:
----
-**I can also answer:**
-1. [relevant follow-up question based on answer]
-2. [another related question]
-3. [deeper dive question]
-4. [practical application question]
-5. [related condition/treatment question]"""
-        
         response = self.llm_client.chat.completions.create(
             model=model,
             messages=[
@@ -1957,31 +2044,72 @@ At the end, add a section:
             ],
             temperature=temperature
         )
-        
+
         answer = response.choices[0].message.content
-        
+
         if answer is None:
             logger.error("LLM returned None content")
-            return None
-        
+            return (None, []), sources_list
+
         # Extract follow-up questions if present
         follow_up_questions = []
-        if answer and ("I can also answer:" in answer or "Suggested Follow-up Questions:" in answer or "Follow-up Questions:" in answer):
+        if answer:
             import re
-            # Split on the follow-up questions marker (support both old and new formats)
-            parts = re.split(r'\*\*I can also answer:\*\*|\*\*Suggested Follow-up Questions:\*\*|Follow-up Questions:|I can also answer:', answer)
-            if len(parts) > 1:
-                questions_section = parts[-1]
-                # Extract numbered questions
-                question_matches = re.findall(r'\d+\.\s*(.+?)(?=\d+\.|$)', questions_section, re.DOTALL)
-                follow_up_questions = [q.strip().strip('[]').strip() for q in question_matches if q.strip()]
-        
+            # Look for numbered list at the end
+            follow_up_match = re.search(
+                r'(?:follow-?up|next|explore|might want|could ask|further)\s*(?:questions?)?:?\s*(.+?)$',
+                answer,
+                re.IGNORECASE | re.DOTALL
+            )
+            if follow_up_match:
+                questions_text = follow_up_match.group(1)
+                question_matches = re.findall(r'^\s*\d+\.\s*(.+?)$', questions_text, re.MULTILINE)
+                follow_up_questions = [q.strip() for q in question_matches if q.strip()]
+
         result = (answer, follow_up_questions)
-        
+
         if self.enable_cache:
             self.cache.set(cache_key, result, expire=self.cache_ttl)
+
+        return result, sources_list
+    
+    def format_sources_for_display(self, sources: List[Dict[str, Any]]) -> str:
+        """Format sources list for user-friendly display using LangChain toolcall format.
         
-        return result
+        Args:
+            sources: List of source dictionaries from prepare_for_llm
+            
+        Returns:
+            Formatted string of sources with citations and links
+        """
+        if not sources:
+            return ""
+        
+        output = ["## Sources"]
+        for source in sources:
+            citation = source.get("citation_number", "?")
+            title = source.get("title", "Unknown")
+            year = source.get("year", "")
+            source_type = source.get("source_type", "")
+            pmid = source.get("pmid", "")
+            url = source.get("url", "")
+            
+            # Build source line
+            source_line = f"[{citation}] {title}"
+            if year and year != "Unknown":
+                source_line += f" ({year})"
+            if source_type and source_type != "Unknown":
+                source_line += f" - {source_type}"
+            
+            # Add link if available
+            if pmid:
+                source_line += f" - https://pubmed.ncbi.nlm.nih.gov/{pmid}"
+            elif url:
+                source_line += f" - {url}"
+            
+            output.append(source_line)
+        
+        return "\n".join(output)
     
     def _get_rejection_recommendation(self, gate2_info, gate3_info):
         recommendations = []
@@ -2318,17 +2446,24 @@ def main():
         print("="*80)
         if use_llm and result.get("answer"):
             print(result["answer"])
+            
+            # Display follow-up questions if available
+            if result.get("follow_up_questions"):
+                print("\n### Explore Further:")
+                for i, q in enumerate(result["follow_up_questions"], 1):
+                    print(f"  {i}. {q}")
         else:
             print("LLM skipped; context prepared.")
+        
+        # Display sources with citations (using LangChain format)
+        if result.get("sources_display"):
+            print("\n" + "="*80)
+            print(result["sources_display"])
+            print("="*80)
         
         # Display evidence chain verification if performed
         if result.get("evidence_chain"):
             print(RetrievalPipeline.format_evidence_chain(result["evidence_chain"]))
-
-        print("\n" + "="*80)
-        print("EVIDENCE")
-        print("="*80)
-        print(result.get("context", ""))
 
 
 
