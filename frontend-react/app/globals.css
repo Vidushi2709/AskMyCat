@@ -2,52 +2,73 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================
+   LIGHT MODE COLORS - Pink, Coral, Sky Blue
+   Change these hex values to update light mode!
+   ============================================ */
 :root {
+  /* Light Mode Palette */
+  --light-pink: #F875AA;      /* Hot pink - primary */
+  --light-coral: #FFCDC9;     /* Soft coral - secondary */
+  --light-sky: #AEDEFC;       /* Sky blue - accents */
+  --light-teal: #93BFC7;      /* Teal - muted/borders */
+  
+  /* Light Mode Theme Variables */
   --background: 0 0% 100%;
   --foreground: 222.2 84% 4.9%;
   --card: 0 0% 100%;
   --card-foreground: 222.2 84% 4.9%;
   --popover: 0 0% 100%;
   --popover-foreground: 222.2 84% 4.9%;
-  --primary: 221.2 83.2% 53.3%;
-  --primary-foreground: 210 40% 98%;
-  --secondary: 210 40% 96.1%;
-  --secondary-foreground: 222.2 47.4% 11.2%;
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 16.3% 46.9%;
-  --accent: 210 40% 96.1%;
-  --accent-foreground: 222.2 47.4% 11.2%;
+  --primary: 336 96% 71%;        /* Pink #F875AA */
+  --primary-foreground: 222.2 84% 4.9%;
+  --secondary: 5 100% 89%;       /* Coral #FFCDC9 */
+  --secondary-foreground: 222.2 84% 4.9%;
+  --muted: 191 37% 68%;          /* Teal #93BFC7 */
+  --muted-foreground: 222.2 84% 4.9%;
+  --accent: 201 95% 84%;         /* Sky Blue #AEDEFC */
+  --accent-foreground: 222.2 84% 4.9%;
   --destructive: 0 84.2% 60.2%;
   --destructive-foreground: 210 40% 98%;
-  --border: 214.3 31.8% 91.4%;
-  --input: 214.3 31.8% 91.4%;
-  --ring: 221.2 83.2% 53.3%;
+  --border: 201 95% 84%;         /* Sky Blue #AEDEFC */
+  --input: 5 100% 89%;           /* Coral #FFCDC9 */
+  --ring: 336 96% 71%;           /* Pink #F875AA */
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
-  }
+/* ============================================
+   DARK MODE COLORS - Charcoal, Forest, Taupe
+   Change these hex values to update dark mode!
+   ============================================ */
+html.dark {
+  /* Dark Mode Palette */
+  --dark-charcoal: #222831;   /* Dark charcoal - backgrounds */
+  --dark-forest: #3F4F44;     /* Forest green - secondary */
+  --dark-taupe: #948979;      /* Warm taupe - primary/accents */
+  --dark-cream: #DFD0B8;      /* Cream - text/foreground */
+  
+  /* Dark Mode Theme Variables */
+  --background: 210 18% 14%;    /* Charcoal #222831 */
+  --foreground: 32 52% 80%;
+  --card: 210 18% 12%;          /* Darker charcoal for cards */
+  --card-foreground: 32 52% 80%;
+  --popover: 210 18% 14%;
+  --popover-foreground: 32 52% 80%;
+  --primary: 25 16% 53%;         /* Taupe #948979 */
+  --primary-foreground: 32 52% 80%;
+  --secondary: 140 11% 28%;      /* Forest #3F4F44 */
+  --secondary-foreground: 32 52% 80%;
+  --muted: 140 11% 28%;          /* Forest #3F4F44 */
+  --muted-foreground: 25 16% 53%;
+  --accent: 25 16% 53%;          /* Taupe #948979 */
+  --accent-foreground: 32 52% 80%;
+  --destructive: 25 16% 53%;
+  --destructive-foreground: 32 52% 80%;
+  --border: 140 11% 28%;         /* Forest #3F4F44 */
+  --input: 140 11% 28%;          /* Forest #3F4F44 */
+  --ring: 25 16% 53%;            /* Taupe #948979 */
 }
 
+/* Apply theme */
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));

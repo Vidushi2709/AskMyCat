@@ -18,7 +18,7 @@ export default function ContradictionAlert({ contradictions }: ContradictionAler
       <div className="space-y-3">
         {contradictions.map((contradiction, idx) => {
           const severityColor = 
-            contradiction.severity === 'critical' ? 'text-red-600 dark:text-red-400' :
+            contradiction.severity === 'critical' ? 'text-destructive' :
             contradiction.severity === 'moderate' ? 'text-yellow-600 dark:text-yellow-400' :
             'text-green-600 dark:text-green-400'
           
@@ -27,7 +27,7 @@ export default function ContradictionAlert({ contradictions }: ContradictionAler
             contradiction.severity === 'moderate' ? '🟡' : '🟢'
 
           return (
-            <div key={idx} className="bg-white dark:bg-gray-900 rounded p-3">
+            <div key={idx} className="bg-card rounded p-3">
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-sm">{severityIcon}</span>
                 <span className={`text-xs font-semibold uppercase ${severityColor}`}>
@@ -37,7 +37,7 @@ export default function ContradictionAlert({ contradictions }: ContradictionAler
               <p className="text-sm text-muted-foreground">
                 Evidence #{contradiction.passage1_idx + 1} conflicts with Evidence #{contradiction.passage2_idx + 1}
               </p>
-              <p className="text-sm mt-2">{contradiction.explanation}</p>
+              <p className="text-sm mt-2 text-foreground">{contradiction.explanation}</p>
             </div>
           )
         })}

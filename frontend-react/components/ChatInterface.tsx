@@ -94,8 +94,8 @@ export default function ChatInterface({ messages, setMessages, settings }: ChatI
       <div className="flex-1 overflow-y-auto space-y-6 pb-6">
         {messages.length === 0 && (
           <div className="text-center py-12">
-            <p className="text-lg mb-2 text-gray-700 dark:text-gray-300">👋 Welcome to EBM RAG System</p>
-            <p className="text-sm text-gray-600 dark:text-gray-400">Ask a medical question to get started</p>
+            <p className="text-lg mb-2 text-foreground">👋 Welcome to EBM RAG System</p>
+            <p className="text-sm text-muted-foreground">Ask a medical question to get started</p>
           </div>
         )}
         
@@ -109,8 +109,8 @@ export default function ChatInterface({ messages, setMessages, settings }: ChatI
         
         {isLoading && (
           <div className="flex items-center gap-2">
-            <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-            <span className="text-sm text-gray-700 dark:text-gray-300">Processing your query...</span>
+            <Loader2 className="w-4 h-4 animate-spin text-primary" />
+            <span className="text-sm text-foreground">Processing your query...</span>
           </div>
         )}
         
@@ -125,12 +125,12 @@ export default function ChatInterface({ messages, setMessages, settings }: ChatI
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask a medical question..."
           disabled={isLoading}
-          className="w-full px-4 py-3 pr-12 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="w-full px-4 py-3 pr-12 rounded-lg border border-input bg-background text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
         />
         <button
           type="submit"
           disabled={!input.trim() || isLoading}
-          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           <Send className="w-4 h-4" />
         </button>

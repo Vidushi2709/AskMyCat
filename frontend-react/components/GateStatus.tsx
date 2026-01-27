@@ -15,7 +15,7 @@ export default function GateStatus({ gates, status }: GateStatusProps) {
         <span className={`text-xs px-2 py-0.5 rounded-full ml-auto ${
           status.includes('passed') 
             ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-            : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+            : 'bg-destructive/10 text-destructive'
         }`}>
           {status.toUpperCase()}
         </span>
@@ -28,7 +28,7 @@ export default function GateStatus({ gates, status }: GateStatusProps) {
             className={`p-3 rounded-md border-2 ${
               gate.passed
                 ? 'bg-green-50 border-green-300 dark:bg-green-950 dark:border-green-800'
-                : 'bg-red-50 border-red-300 dark:bg-red-950 dark:border-red-800'
+                : 'bg-destructive/5 border-destructive/30'
             }`}
           >
             <div className="flex items-center justify-between mb-1">
@@ -38,7 +38,7 @@ export default function GateStatus({ gates, status }: GateStatusProps) {
               {gate.passed ? (
                 <CheckCircle className="w-4 h-4 text-green-600" />
               ) : (
-                <XCircle className="w-4 h-4 text-red-600" />
+                <XCircle className="w-4 h-4 text-destructive" />
               )}
             </div>
             <div className="text-xs text-muted-foreground">

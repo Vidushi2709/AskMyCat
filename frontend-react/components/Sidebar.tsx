@@ -107,16 +107,6 @@ export default function Sidebar({ settings, setSettings }: SidebarProps) {
               />
               <span className="text-sm">Verify Evidence Chain</span>
             </label>
-
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.detect_conflicts}
-                onChange={(e) => updateSetting('detect_conflicts', e.target.checked)}
-                className="w-4 h-4"
-              />
-              <span className="text-sm">Detect Contradictions</span>
-            </label>
           </div>
         </div>
 

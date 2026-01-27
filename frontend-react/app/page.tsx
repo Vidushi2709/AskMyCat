@@ -1,14 +1,15 @@
 'use client'
 
-import React, { useState } from 'react';
+import React from 'react';
 import Link from 'next/link'
+import { useDarkMode } from '@/context/DarkModeContext'
 import { Sun, Moon, Shield, Database, Brain, AlertCircle } from 'lucide-react';
 
 export default function AskMyCatLanding() {
-  const [isDark, setIsDark] = useState(false);
+  const { isDark, setIsDark } = useDarkMode();
 
   return (
-    <div className={`min-h-screen transition-colors duration-300 ${isDark ? 'bg-gray-900' : 'bg-white'}`}>
+    <div className="min-h-screen transition-colors duration-300 bg-background text-foreground">
       {/* Gradient Background */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         {isDark ? (
@@ -49,20 +50,20 @@ export default function AskMyCatLanding() {
         {/* Navigation */}
         <nav className="flex items-center justify-between px-8 py-6 max-w-7xl mx-auto">
           <div className="flex items-center gap-8">
-            <a href="#features" className={`font-medium ${isDark ? 'text-white' : 'text-black'} hover:opacity-70 transition-opacity`}>Features</a>
-            <a href="#docs" className={`font-medium ${isDark ? 'text-white' : 'text-black'} hover:opacity-70 transition-opacity`}>Docs</a>
-            <a href="#about" className={`font-medium ${isDark ? 'text-white' : 'text-black'} hover:opacity-70 transition-opacity`}>About</a>
+            <Link href="/features" className="font-medium hover:opacity-70 transition-opacity">Features</Link>
+            <a href="#docs" className="font-medium hover:opacity-70 transition-opacity">Docs</a>
+            <a href="#about" className="font-medium hover:opacity-70 transition-opacity">About</a>
           </div>
           
           <div className="flex items-center gap-4">
             <button
               onClick={() => setIsDark(!isDark)}
-              className={`p-2 rounded-lg ${isDark ? 'bg-gray-800 text-yellow-400' : 'bg-gray-100 text-gray-700'} hover:opacity-80 transition-opacity`}
+              className="p-2 rounded-lg bg-primary text-primary-foreground hover:opacity-80 transition-opacity"
             >
               {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
             <Link href="/signup">
-              <button className={`px-6 py-2.5 rounded-full font-medium ${isDark ? 'bg-white text-black' : 'bg-black text-white'} hover:opacity-90 transition-opacity`}>
+              <button className="px-6 py-2.5 rounded-full font-medium bg-primary text-primary-foreground hover:opacity-90 transition-opacity">
                 Sign up
               </button>
             </Link>
@@ -71,23 +72,23 @@ export default function AskMyCatLanding() {
 
         {/* Hero Section */}
         <div className="max-w-6xl mx-auto px-8 pt-16 pb-32 text-center">
-          <h1 className={`text-7xl font-bold mb-12 ${isDark ? 'text-white' : 'text-black'}`} style={{ fontFamily: 'monospace', letterSpacing: '-0.02em' }}>
+          <h1 className="text-7xl font-bold mb-12" style={{ fontFamily: 'monospace', letterSpacing: '-0.02em' }}>
             Medical answers<br />you can trust
           </h1>
           
-          <div className={`inline-block px-16 py-16 rounded-3xl backdrop-blur-md ${isDark ? 'bg-white/10 border border-white/20' : 'bg-white/50 border border-white/40'} shadow-2xl max-w-3xl`}>
-            <p className={`text-xl mb-10 leading-relaxed ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
+          <div className="inline-block px-16 py-16 rounded-3xl backdrop-blur-md bg-card border border-border shadow-2xl max-w-3xl">
+            <p className="text-xl mb-10 leading-relaxed">
               From evidence retrieval to hallucination detection -<br />
               only speaks when it knows, otherwise it stays silent.
             </p>
             
             <div className="flex items-center justify-center gap-4">
               <Link href="/ask">
-                <button className={`px-8 py-4 rounded-full font-medium text-lg ${isDark ? 'bg-white text-black' : 'bg-black text-white'} hover:opacity-90 transition-all hover:scale-105`}>
+                <button className="px-8 py-4 rounded-full font-medium text-lg bg-primary text-primary-foreground hover:opacity-90 transition-all hover:scale-105">
                   Ask a question
                 </button>
               </Link>
-              <button className={`px-8 py-4 rounded-full font-medium text-lg ${isDark ? 'bg-white/10 text-white border-2 border-white/30' : 'bg-white border-2 border-gray-300 text-black'} hover:opacity-90 transition-all hover:scale-105`}>
+              <button className="px-8 py-4 rounded-full font-medium text-lg bg-secondary text-secondary-foreground border-2 border-border hover:opacity-90 transition-all hover:scale-105">
                 View demo
               </button>
             </div>
@@ -98,57 +99,57 @@ export default function AskMyCatLanding() {
         <div className="max-w-6xl mx-auto px-8 pb-20">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Energy Gating System */}
-            <div className={`p-8 rounded-2xl ${isDark ? 'bg-white/5 hover:bg-white/95 border-white/10' : 'bg-white/30 hover:bg-white/95 border-gray-200'} backdrop-blur-sm border hover:shadow-2xl transition-all duration-300 cursor-pointer group hover:scale-105`}>
-              <div className={`w-14 h-14 rounded-xl ${isDark ? 'bg-gradient-to-br from-purple-500 to-pink-500' : 'bg-gradient-to-br from-purple-400 to-pink-400'} flex items-center justify-center mb-6 shadow-lg`}>
+            <div className={`p-8 rounded-2xl ${isDark ? 'bg-white/5 hover:bg-white/95 border-white/10' : 'bg-primary/10 hover:bg-primary/20 border-primary/30'} backdrop-blur-sm border hover:shadow-2xl transition-all duration-300 cursor-pointer group hover:scale-105`}>
+              <div className={`w-14 h-14 rounded-xl ${isDark ? 'bg-gradient-to-br from-purple-500 to-pink-500' : 'bg-gradient-to-br from-pink-400 to-coral-300'} flex items-center justify-center mb-6 shadow-lg`}>
                 <Shield className="w-7 h-7 text-white" />
               </div>
-              <h3 className={`text-xl font-bold mb-3 flex items-center gap-2 ${isDark ? 'text-white group-hover:text-gray-900' : 'text-black'} transition-colors`}>
+              <h3 className={`text-xl font-bold mb-3 flex items-center gap-2 ${isDark ? 'text-white group-hover:text-gray-900' : 'text-foreground'} transition-colors`}>
                 3-Gate Energy System
                 <span className="text-sm">→</span>
               </h3>
-              <p className={`${isDark ? 'text-gray-400 group-hover:text-gray-700' : 'text-gray-600'} leading-relaxed transition-colors`}>
+              <p className={`${isDark ? 'text-gray-400 group-hover:text-gray-700' : 'text-muted-foreground group-hover:text-foreground'} leading-relaxed transition-colors`}>
                 Query quality, retrieval quality, and evidence consistency checks ensure only reliable answers pass through
               </p>
             </div>
 
             {/* Evidence Verification */}
-            <div className={`p-8 rounded-2xl ${isDark ? 'bg-white/5 hover:bg-white/95 border-white/10' : 'bg-white/30 hover:bg-white/95 border-gray-200'} backdrop-blur-sm border hover:shadow-2xl transition-all duration-300 cursor-pointer group hover:scale-105`}>
-              <div className={`w-14 h-14 rounded-xl ${isDark ? 'bg-gradient-to-br from-blue-500 to-cyan-500' : 'bg-gradient-to-br from-blue-400 to-cyan-400'} flex items-center justify-center mb-6 shadow-lg`}>
+            <div className={`p-8 rounded-2xl ${isDark ? 'bg-white/5 hover:bg-white/95 border-white/10' : 'bg-secondary/20 hover:bg-secondary/40 border-secondary/40'} backdrop-blur-sm border hover:shadow-2xl transition-all duration-300 cursor-pointer group hover:scale-105`}>
+              <div className={`w-14 h-14 rounded-xl ${isDark ? 'bg-gradient-to-br from-blue-500 to-cyan-500' : 'bg-gradient-to-br from-sky-400 to-teal-400'} flex items-center justify-center mb-6 shadow-lg`}>
                 <Database className="w-7 h-7 text-white" />
               </div>
-              <h3 className={`text-xl font-bold mb-3 flex items-center gap-2 ${isDark ? 'text-white group-hover:text-gray-900' : 'text-black'} transition-colors`}>
+              <h3 className={`text-xl font-bold mb-3 flex items-center gap-2 ${isDark ? 'text-white group-hover:text-gray-900' : 'text-foreground'} transition-colors`}>
                 Evidence Verification
                 <span className="text-sm">→</span>
               </h3>
-              <p className={`${isDark ? 'text-gray-400 group-hover:text-gray-700' : 'text-gray-600'} leading-relaxed transition-colors`}>
+              <p className={`${isDark ? 'text-gray-400 group-hover:text-gray-700' : 'text-muted-foreground group-hover:text-foreground'} leading-relaxed transition-colors`}>
                 Sentence-level verification with citation mapping and hallucination detection for complete transparency
               </p>
             </div>
 
             {/* Smart Retrieval */}
-            <div className={`p-8 rounded-2xl ${isDark ? 'bg-white/5 hover:bg-white/95 border-white/10' : 'bg-white/30 hover:bg-white/95 border-gray-200'} backdrop-blur-sm border hover:shadow-2xl transition-all duration-300 cursor-pointer group hover:scale-105`}>
+            <div className={`p-8 rounded-2xl ${isDark ? 'bg-white/5 hover:bg-white/95 border-white/10' : 'bg-accent/20 hover:bg-accent/40 border-accent/40'} backdrop-blur-sm border hover:shadow-2xl transition-all duration-300 cursor-pointer group hover:scale-105`}>
               <div className={`w-14 h-14 rounded-xl ${isDark ? 'bg-gradient-to-br from-green-500 to-emerald-500' : 'bg-gradient-to-br from-green-400 to-emerald-400'} flex items-center justify-center mb-6 shadow-lg`}>
                 <Brain className="w-7 h-7 text-white" />
               </div>
-              <h3 className={`text-xl font-bold mb-3 flex items-center gap-2 ${isDark ? 'text-white group-hover:text-gray-900' : 'text-black'} transition-colors`}>
+              <h3 className={`text-xl font-bold mb-3 flex items-center gap-2 ${isDark ? 'text-white group-hover:text-gray-900' : 'text-foreground'} transition-colors`}>
                 Neural Reranking
                 <span className="text-sm">→</span>
               </h3>
-              <p className={`${isDark ? 'text-gray-400 group-hover:text-gray-700' : 'text-gray-600'} leading-relaxed transition-colors`}>
+              <p className={`${isDark ? 'text-gray-400 group-hover:text-gray-700' : 'text-muted-foreground group-hover:text-foreground'} leading-relaxed transition-colors`}>
                 Custom-trained ranking model with ChromaDB integration for precise medical literature retrieval
               </p>
             </div>
 
             {/* Contradiction Detection */}
-            <div className={`p-8 rounded-2xl ${isDark ? 'bg-white/5 hover:bg-white/95 border-white/10' : 'bg-white/30 hover:bg-white/95 border-gray-200'} backdrop-blur-sm border hover:shadow-2xl transition-all duration-300 cursor-pointer group hover:scale-105`}>
+            <div className={`p-8 rounded-2xl ${isDark ? 'bg-white/5 hover:bg-white/95 border-white/10' : 'bg-destructive/10 hover:bg-destructive/20 border-destructive/30'} backdrop-blur-sm border hover:shadow-2xl transition-all duration-300 cursor-pointer group hover:scale-105`}>
               <div className={`w-14 h-14 rounded-xl ${isDark ? 'bg-gradient-to-br from-orange-500 to-red-500' : 'bg-gradient-to-br from-orange-400 to-red-400'} flex items-center justify-center mb-6 shadow-lg`}>
                 <AlertCircle className="w-7 h-7 text-white" />
               </div>
-              <h3 className={`text-xl font-bold mb-3 flex items-center gap-2 ${isDark ? 'text-white group-hover:text-gray-900' : 'text-black'} transition-colors`}>
+              <h3 className={`text-xl font-bold mb-3 flex items-center gap-2 ${isDark ? 'text-white group-hover:text-gray-900' : 'text-foreground'} transition-colors`}>
                 Conflict Detection
                 <span className="text-sm">→</span>
               </h3>
-              <p className={`${isDark ? 'text-gray-400 group-hover:text-gray-700' : 'text-gray-600'} leading-relaxed transition-colors`}>
+              <p className={`${isDark ? 'text-gray-400 group-hover:text-gray-700' : 'text-muted-foreground group-hover:text-foreground'} leading-relaxed transition-colors`}>
                 Identifies and explains contradictions in medical evidence with severity classification
               </p>
             </div>

@@ -15,7 +15,7 @@ export default function EvidenceVerification({ evidenceChain }: EvidenceVerifica
         <span className={`text-xs px-2 py-1 rounded-full ${
           verificationRate >= 80 ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
           verificationRate >= 60 ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' :
-          'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+          'bg-destructive/10 text-destructive'
         }`}>
           {verificationRate.toFixed(0)}% Verified
         </span>
@@ -45,14 +45,14 @@ export default function EvidenceVerification({ evidenceChain }: EvidenceVerifica
             className={`p-2 rounded text-sm border ${
               sentence.verified
                 ? 'bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800'
-                : 'bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800'
+                : 'bg-destructive/5 border-destructive/30'
             }`}
           >
             <div className="flex items-start gap-2">
               {sentence.verified ? (
                 <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0 mt-0.5" />
               ) : (
-                <XCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                <XCircle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
               )}
               <div className="flex-1">
                 <p className="leading-relaxed">{sentence.sentence}</p>

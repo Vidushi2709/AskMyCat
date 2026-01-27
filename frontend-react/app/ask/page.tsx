@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Send } from 'lucide-react'
+import { ArrowLeft, Send, Sparkles } from 'lucide-react'
 
 export default function AskQuestion() {
   const [formData, setFormData] = useState({
@@ -44,13 +44,22 @@ export default function AskQuestion() {
       <div className="relative z-10">
         {/* Header */}
         <div className="max-w-4xl mx-auto px-6 py-8">
-          <Link 
-            href="/" 
-            className="inline-flex items-center gap-2 text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition mb-8"
-          >
-            <ArrowLeft className="w-5 h-5" />
-            Back to Home
-          </Link>
+          <div className="flex items-center justify-between mb-8">
+            <Link 
+              href="/" 
+              className="inline-flex items-center gap-2 text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition"
+            >
+              <ArrowLeft className="w-5 h-5" />
+              Back to Home
+            </Link>
+            <Link 
+              href="/features"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span className="hidden sm:inline">Features</span>
+            </Link>
+          </div>
 
           <div className="text-center mb-12">
             <h1 className="text-5xl md:text-6xl font-bold text-gray-900 dark:text-white mb-4" style={{ fontFamily: 'monospace' }}>
