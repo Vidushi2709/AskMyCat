@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import ChatInterface from '@/components/ChatInterface'
+import SettingsPanel from '@/components/SettingsPanel'
 import { ChatMessage, QuerySettings } from '@/types'
 import { useDarkMode } from '@/context/DarkModeContext'
 import { LogOut, Menu, X, Sparkles } from 'lucide-react'
@@ -13,13 +14,11 @@ export default function ChatPage() {
   const { isDark, setIsDark } = useDarkMode()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [settings] = useState<QuerySettings>({
+  const [settings, setSettings] = useState<QuerySettings>({
     top_k: 10,
-    threshold: 0.5,
-    enable_gates: true,
-    verify_evidence: false,
-    detect_conflicts: true,
-    use_llm: true,
+    min_evidence_level: 'MODERATE',
+    use_pubmed_fallback: true,
+    verify_answer: true,
   })
 
   const handleLogout = () => {
@@ -46,11 +45,16 @@ export default function ChatPage() {
       </div>
 
       {/* Sidebar */}
-      <div className={`${sidebarOpen ? 'w-64' : 'w-0'} transition-all duration-300 border-r border-border bg-card/50 flex flex-col backdrop-blur-sm relative z-10`}>
+      <div className={`${sidebarOpen ? 'w-80' : 'w-0'} transition-all duration-300 border-r border-border bg-card/50 flex flex-col backdrop-blur-sm relative z-10 overflow-hidden`}>
         {sidebarOpen && (
           <>
-            {/* Empty space for future features */}
-            <div className="flex-1"></div>
+            {/* Settings Panel */}
+            <div className="flex-1 overflow-y-auto p-4">
+              <SettingsPanel 
+                settings={settings}
+                onSettingsChange={setSettings}
+              />
+            </div>
 
             {/* User Section */}
             <div className="p-3 border-t border-border">

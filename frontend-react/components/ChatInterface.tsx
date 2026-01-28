@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Send, Loader2 } from 'lucide-react'
 import { ChatMessage, QuerySettings } from '@/types'
 import { queryRAG } from '@/lib/api'
-import MessageBubble from './MessageBubble'
+import MessageBubbleGRADE from './MessageBubbleGRADE'
 
 interface ChatInterfaceProps {
   messages: ChatMessage[]
@@ -100,7 +100,7 @@ export default function ChatInterface({ messages, setMessages, settings }: ChatI
         )}
         
         {messages.map((message, idx) => (
-          <MessageBubble 
+          <MessageBubbleGRADE 
             key={idx} 
             message={message} 
             onFollowUp={handleFollowUp}

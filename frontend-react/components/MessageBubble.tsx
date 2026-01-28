@@ -121,8 +121,8 @@ export default function MessageBubble({ message, onFollowUp }: MessageBubbleProp
               </div>
             )}
 
-            {response.evidence_chain && (
-              <EvidenceVerification evidenceChain={response.evidence_chain} />
+            {response.verification && (
+              <EvidenceVerification verification={response.verification} />
             )}
 
             {response.evidence_passages && response.evidence_passages.length > 0 && (

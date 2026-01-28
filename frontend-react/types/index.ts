@@ -1,65 +1,109 @@
+// Query Settings with GRADE Evidence Levels
+export type EvidenceLevel = 'HIGH' | 'MODERATE' | 'LOW' | 'VERY_LOW'
+export type StudyDesign = 'META_ANALYSIS' | 'SYSTEMATIC_REVIEW' | 'RCT' | 'COHORT' | 'CASE_CONTROL' | 'CROSS_SECTIONAL' | 'CASE_SERIES' | 'CASE_REPORT' | 'EXPERT_OPINION' | 'UNKNOWN'
+
 export interface QuerySettings {
   top_k: number
-  threshold: number
-  enable_gates: boolean
-  verify_evidence: boolean
-  detect_conflicts: boolean
-  use_llm: boolean
+  min_evidence_level: EvidenceLevel
+  use_pubmed_fallback: boolean
+  verify_answer: boolean
 }
 
-export interface GateResult {
-  gate_name: string
-  passed: boolean
-  score: number
-  threshold: number
-  reason?: string
+// Confidence Score Model
+export interface ConfidenceScore {
+  label: 'HIGH' | 'MODERATE' | 'LOW' | 'VERY_LOW'
+  score: number // 0.0-1.0
+  components: {
+    evidence_quality: number
+    grade_bonus: number
+    verification_penalty: number
+  }
 }
 
+// Evidence Summary
+export interface EvidenceSummary {
+  total_retrieved: number
+  high_quality_count: number
+  grade_distribution: Record<string, number>
+  study_types: Record<string, number>
+}
+
+// Evidence Passage with GRADE Level and Study Design
 export interface EvidencePassage {
+  index: number
   text: string
   metadata: Record<string, any>
-  similarity: number
-  energy: number
-  confidence_level: string
+  evidence_level: EvidenceLevel
+  study_design: StudyDesign
 }
 
+// Verification Claim
+export interface VerificationClaim {
+  claim: string
+  verified: boolean
+  confidence: number
+  supporting_evidence?: string
+  evidence_quality?: EvidenceLevel
+}
+
+// Claim Verification
+export interface ClaimVerification {
+  verified: boolean
+  total_claims: number
+  verified_claims: number
+  verification_rate: number
+  unverified_count: number
+  claims: VerificationClaim[]
+}
+
+// Contradiction Detection
 export interface Contradiction {
-  passage1_idx: number
-  passage2_idx: number
-  severity: string
+  type: 'statistical' | 'directional'
+  source_1: string
+  source_2: string
+  severity: 'high' | 'moderate' | 'minor'
   explanation: string
 }
 
-export interface EvidenceChain {
-  verification_rate: number
-  verified_sentences: number
-  unverified_sentences: number
-  sentences: Array<{
-    sentence: string
-    verified: boolean
-    confidence: number
-    citations: number[]
-  }>
-}
-
+// Main Query Response
 export interface QueryResponse {
   query: string
-  gate_status: string
-  gates: GateResult[]
+  status: 'success' | 'rejected'
   answer?: string
-  follow_up_questions?: string[]
-  confidence: string
+  confidence?: ConfidenceScore
+  evidence_summary: EvidenceSummary
   evidence_count: number
   evidence_passages: EvidencePassage[]
-  evidence_chain?: EvidenceChain
-  verification_rate?: number
-  contradictions?: Contradiction[]
+  sources: string
+  verification?: ClaimVerification
+  contradictions: Contradiction[]
   has_contradictions: boolean
   response_time_ms: number
-  cache_hit: boolean
-  warnings: string[]
+  reason?: string // For rejected queries
+  suggestion?: string // For rejected queries
 }
 
+// DDX Response
+export interface DDXResponse {
+  query: string
+  status: 'success' | 'rejected'
+  answer?: string
+  confidence?: ConfidenceScore
+  evidence_summary: EvidenceSummary
+  evidence_count: number
+  response_time_ms: number
+}
+
+// Health Check Response
+export interface HealthResponse {
+  status: 'healthy' | 'unhealthy'
+  device: string
+  model_loaded: boolean
+  cache_stats: Record<string, any>
+  uptime_seconds: number
+}
+
+// Chat Message
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content?: string
