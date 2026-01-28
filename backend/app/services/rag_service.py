@@ -6,62 +6,64 @@ from typing import Optional
 
 # Add parent directory to import retreiver
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from retreiver import RetrievalPipeline
+from retreiverv2 import (
+    MedicalRetrievalPipeline, 
+    EvidenceLevel, 
+    MedicalEvidence,
+    StudyDesign
+)
 
 logger = logging.getLogger(__name__)
 
 class RAGService:
-    """Wrapper service for RetrievalPipeline with lifecycle management"""
+    """Wrapper service for MedicalRetrievalPipeline with lifecycle management"""
     
     def __init__(self, device: str = "cuda", enable_cache: bool = True):
         self.device = device
         self.enable_cache = enable_cache
-        self.pipeline: Optional[RetrievalPipeline] = None
+        self.pipeline: Optional[MedicalRetrievalPipeline] = None
         self.start_time = time.time()
         
     def initialize(self):
-        """Initialize the RAG pipeline"""
+        """Initialize the medical RAG pipeline"""
         try:
-            logger.info(f"Initializing RAG pipeline on device: {self.device}")
-            self.pipeline = RetrievalPipeline(
+            logger.info(f"Initializing Medical RAG pipeline on device: {self.device}")
+            self.pipeline = MedicalRetrievalPipeline(
                 device=self.device,
                 enable_cache=self.enable_cache
             )
-            logger.info("RAG pipeline initialized successfully")
+            logger.info("Medical RAG pipeline initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize RAG pipeline: {e}")
+            logger.error(f"Failed to initialize Medical RAG pipeline: {e}")
             raise
     
     def query(
         self,
         query: str,
         top_k: int = 10,
-        threshold: float = 0.5,
-        enable_gates: bool = True,
-        verify_evidence: bool = False,
-        detect_conflicts: bool = True,
-        use_llm: bool = True
+        min_evidence_level: str = "LOW",
+        use_pubmed_fallback: bool = True,
+        verify_answer: bool = True
     ) -> dict:
-        """Execute RAG query"""
+        """Execute medical RAG query with GRADE evidence grading"""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
         
         start_time = time.time()
         
         try:
+            # Convert string evidence level to enum
+            evidence_level = EvidenceLevel[min_evidence_level]
+            
             result = self.pipeline.answer_query(
-                user_query=query,
+                query=query,
                 top_k=top_k,
-                threshold=threshold,
-                use_llm=use_llm,
-                enable_gates=enable_gates,
-                verify_chain=verify_evidence,
-                detect_conflicts=detect_conflicts
+                min_evidence_level=evidence_level,
+                use_pubmed_fallback=use_pubmed_fallback,
+                verify_answer=verify_answer
             )
             
-            logger.info(f"Pipeline returned result type: {type(result)}")
-            if result:
-                logger.info(f"Result keys: {list(result.keys())}")
+            logger.info(f"Pipeline returned result with status: {result.get('status')}")
             
             # Add response time
             result["response_time_ms"] = (time.time() - start_time) * 1000
@@ -77,130 +79,69 @@ class RAGService:
         self,
         query: str,
         top_k: int = 10,
-        threshold: float = 0.5,
         num_diagnoses: int = 5
     ) -> dict:
-        """Generate differential diagnosis"""
+        """Generate differential diagnosis using evidence retrieval"""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
         
         start_time = time.time()
         
         try:
-            result = self.pipeline.generate_differential_diagnosis(
-                user_query=query,
+            # Append DDX context to query
+            ddx_query = f"What are the differential diagnoses for: {query}"
+            
+            result = self.pipeline.answer_query(
+                query=ddx_query,
                 top_k=top_k,
-                threshold=threshold,
-                num_diagnoses=num_diagnoses
+                min_evidence_level=EvidenceLevel.MODERATE,
+                use_pubmed_fallback=True,
+                verify_answer=True
             )
             
             result["response_time_ms"] = (time.time() - start_time) * 1000
-            return result
+            result["num_diagnoses"] = num_diagnoses
+            
+            return self._format_response(result)
             
         except Exception as e:
             logger.error(f"DDX generation failed: {e}")
             raise
     
     def _format_response(self, result: dict) -> dict:
-        """Format pipeline result for API response"""
-        # Extract gate results
-        gates = []
-        if result.get("gates"):
-            for gate_name, gate_data in result["gates"].items():
-                # Handle reasons as list or string
-                reasons = gate_data.get("reasons", gate_data.get("reason", []))
-                if isinstance(reasons, list):
-                    reason_str = "; ".join(reasons) if reasons else None
-                else:
-                    reason_str = reasons
-                
-                gates.append({
-                    "gate_name": gate_name,
-                    "passed": gate_data.get("passed", False),
-                    "score": gate_data.get("score", gate_data.get("energy_score", 0.0)),
-                    "threshold": gate_data.get("threshold", 0.0),
-                    "reason": reason_str
-                })
+        """Format MedicalRetrievalPipeline result for API response - SIMPLIFIED"""
         
-        # Format evidence passages
-        evidence_passages = []
-        for passage_data in result.get("filtered_passages", []):
-            # Handle tuple format: (text, metadata, similarity)
-            if isinstance(passage_data, tuple):
-                if len(passage_data) == 3:
-                    text, metadata, similarity = passage_data
-                elif len(passage_data) == 4:
-                    # Handle potential 4-tuple format (text, metadata, similarity, extra)
-                    text, metadata, similarity, _ = passage_data
-                else:
-                    logger.warning(f"Unexpected tuple length: {len(passage_data)}, skipping")
-                    continue
-            elif isinstance(passage_data, dict):
-                # Fallback if it's a dict
-                text = passage_data.get("text", "")
-                metadata = passage_data.get("metadata", {})
-                similarity = passage_data.get("similarity", 0.0)
-            else:
-                logger.warning(f"Unexpected passage format: {type(passage_data)}, skipping")
-                continue
-            
-            energy = 1 - similarity
-            
-            # Determine confidence level
-            if energy < 0.3:
-                confidence_level = "HIGH"
-            elif energy < 0.5:
-                confidence_level = "MEDIUM"
-            else:
-                confidence_level = "LOW"
-            
-            evidence_passages.append({
-                "text": text,
-                "metadata": metadata,
-                "similarity": similarity,
-                "energy": energy,
-                "confidence_level": confidence_level
-            })
+        # Handle rejected queries
+        if result.get("status") == "rejected":
+            return {
+                "query": result.get("query", ""),
+                "status": "rejected",
+                "answer": "Insufficient evidence to provide a confident answer. Please consult primary literature or clinical guidelines.",
+                "reason": result.get("reason", "Insufficient or inconsistent evidence"),
+                "suggestion": result.get("suggestion", ""),
+                "confidence": {
+                    "label": "VERY_LOW",
+                    "score": 0.0
+                },
+                "sources": "",
+                "evidence_count": 0
+            }
         
-        # Format contradictions
-        contradictions = []
-        contradictions_data = result.get("contradictions", {})
-        if contradictions_data and isinstance(contradictions_data, dict) and contradictions_data.get("has_contradictions"):
-            for conflict in contradictions_data.get("conflicts", []):
-                # Only add if all required fields are present and valid
-                passage1_idx = conflict.get("passage1_idx")
-                passage2_idx = conflict.get("passage2_idx")
-                severity = conflict.get("severity")
-                explanation = conflict.get("explanation")
-                
-                if all(x is not None for x in [passage1_idx, passage2_idx, severity, explanation]):
-                    contradictions.append({
-                        "passage1_idx": passage1_idx,
-                        "passage2_idx": passage2_idx,
-                        "severity": severity,
-                        "explanation": explanation
-                    })
-                else:
-                    logger.warning(f"Skipping incomplete contradiction data: {conflict}")
+        # Extract confidence
+        confidence_data = result.get("confidence", {})
+        confidence = {
+            "label": confidence_data.get("label", "UNKNOWN"),
+            "score": confidence_data.get("score", 0.0)
+        }
         
-        # Build formatted response
+        # Simple, clean response: just answer + sources
         formatted = {
             "query": result.get("query", ""),
-            "gate_status": result.get("gate_status", "unknown"),
-            "gates": gates,
-            "gate_diagnostics": result.get("gate_diagnostics"),
-            "answer": result.get("answer"),
-            "follow_up_questions": result.get("follow_up_questions", []),
-            "confidence": result.get("confidence", "unknown"),
-            "evidence_count": len(evidence_passages),
-            "evidence_passages": evidence_passages,
-            "evidence_chain": result.get("evidence_chain"),
-            "verification_rate": result.get("evidence_chain", {}).get("verification_rate"),
-            "contradictions": contradictions,
-            "has_contradictions": bool(contradictions),
-            "response_time_ms": result.get("response_time_ms", 0),
-            "cache_hit": result.get("cache_hit", False),
-            "warnings": result.get("warnings", [])
+            "status": result.get("status", "success"),
+            "answer": result.get("answer", ""),
+            "confidence": confidence,
+            "sources": result.get("sources", ""),
+            "evidence_count": len(result.get("filtered_passages", []))
         }
         
         return formatted

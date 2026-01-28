@@ -33,25 +33,21 @@ async def query_rag(
     service: RAGService = Depends(get_rag_service)
 ):
     """
-    Main RAG query endpoint
+    Main Medical RAG query endpoint with GRADE evidence grading
     
     - **query**: Medical question (10-500 chars)
     - **top_k**: Number of passages to retrieve (1-50)
-    - **threshold**: Similarity threshold (0.0-1.0)
-    - **enable_gates**: Enable multi-level energy gates
-    - **verify_evidence**: Verify answer with evidence chain
-    - **detect_conflicts**: Detect contradictions in evidence
-    - **use_llm**: Generate LLM answer
+    - **min_evidence_level**: Minimum GRADE level (HIGH, MODERATE, LOW, VERY_LOW)
+    - **use_pubmed_fallback**: Enable PubMed search fallback
+    - **verify_answer**: Verify answer with BiomedNLI
     """
     try:
         result = service.query(
             query=request.query,
             top_k=request.top_k,
-            threshold=request.threshold,
-            enable_gates=request.enable_gates,
-            verify_evidence=request.verify_evidence,
-            detect_conflicts=request.detect_conflicts,
-            use_llm=request.use_llm
+            min_evidence_level=request.min_evidence_level,
+            use_pubmed_fallback=request.use_pubmed_fallback,
+            verify_answer=request.verify_answer
         )
         return QueryResponse(**result)
         
@@ -78,14 +74,12 @@ async def differential_diagnosis(
     
     - **query**: Clinical presentation (symptoms, findings)
     - **top_k**: Number of passages to retrieve
-    - **threshold**: Similarity threshold
     - **num_diagnoses**: Number of top diagnoses to return (1-20)
     """
     try:
         result = service.differential_diagnosis(
             query=request.query,
             top_k=request.top_k,
-            threshold=request.threshold,
             num_diagnoses=request.num_diagnoses
         )
         return DDXResponse(**result)
@@ -198,11 +192,9 @@ async def answer(
         result = service.query(
             query=request.query,
             top_k=request.top_k,
-            threshold=request.threshold,
-            enable_gates=request.enable_gates,
-            verify_evidence=request.verify_evidence,
-            detect_conflicts=request.detect_conflicts,
-            use_llm=request.use_llm
+            min_evidence_level=request.min_evidence_level,
+            use_pubmed_fallback=request.use_pubmed_fallback,
+            verify_answer=request.verify_answer
         )
         return QueryResponse(**result)
     except Exception as e:

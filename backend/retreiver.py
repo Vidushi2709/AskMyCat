@@ -888,7 +888,7 @@ class RetrievalPipeline:
         if not strong_evidence:
             return {
                 "score": 0.0,
-                "label": "LOW",
+                "label": "VERY_LOW",
                 "components": {
                     "mean_similarity": 0.0,
                     "mean_energy": 1.0,
@@ -903,24 +903,41 @@ class RetrievalPipeline:
         mean_sim = sum(similarities) / len(similarities)
         mean_energy = sum(energies) / len(energies)
         
-        # coverage (simplified - no concept extraction needed for energy-based approach)
-        coverage = 0.5  # Default moderate coverage for energy-based assessment
-        n = len(strong_evidence)
+        # Check for high-quality evidence (from GRADE assessment)
+        high_quality_count = 0
+        for evidence in strong_evidence:
+            metadata = evidence.get("metadata", {})
+            grade = metadata.get("grade_level", "UNKNOWN")
+            if grade in ["HIGH", "MODERATE"]:
+                high_quality_count += 1
         
-        # confidence formula (using normalized energy scores where lower = better)
+        # Quality bonus: if we have high/moderate quality evidence, boost confidence
+        quality_bonus = min(0.25, high_quality_count * 0.15)
+        
+        n = len(strong_evidence)
+        coverage = 0.5  # Default moderate coverage
+        
+        # Improved confidence formula:
+        # - More weight on evidence count (consistency indicator)
+        # - Less weight on energy (which can be noisy)
+        # - Add quality bonus for high-quality sources
         score = (
-            0.35 * mean_sim +
-            0.35 * (1.0 - mean_energy) +  # mean_energy is now normalized [0,1], lower = better
-            0.20 * min(1.0, n / 3.0) +
-            0.10 * coverage
+            0.30 * mean_sim +              # Similarity to query
+            0.25 * (1.0 - mean_energy) +   # Energy (lower is better)
+            0.30 * min(1.0, n / 5.0) +     # Evidence count (5+ = max)
+            0.15 * coverage +               # Coverage
+            quality_bonus                   # Bonus for high-quality sources
         )
         
-        if score >= 0.75:
+        # Confidence thresholds - more generous to reflect actual quality
+        if score >= 0.70:
             label = "HIGH"
-        elif score >= 0.55:
+        elif score >= 0.50:
             label = "MEDIUM"
-        else:
+        elif score >= 0.30:
             label = "LOW"
+        else:
+            label = "VERY_LOW"
         
         return {
             "score": round(score, 3),
@@ -929,6 +946,8 @@ class RetrievalPipeline:
                 "mean_similarity": round(mean_sim, 3),
                 "mean_energy": round(mean_energy, 3),
                 "evidence_count": n,
+                "high_quality_count": high_quality_count,
+                "quality_bonus": round(quality_bonus, 3),
                 "coverage": round(coverage, 2),
             }
         }

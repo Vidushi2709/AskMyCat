@@ -5,79 +5,100 @@ from typing import Optional, List, Dict, Any
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=10, max_length=500, description="Medical question to ask")
     top_k: int = Field(10, ge=1, le=50, description="Number of passages to retrieve")
-    threshold: float = Field(0.5, ge=0.0, le=1.0, description="Minimum similarity threshold")
-    enable_gates: bool = Field(True, description="Enable multi-level energy gates")
-    verify_evidence: bool = Field(False, description="Verify answer with evidence chain")
-    detect_conflicts: bool = Field(True, description="Detect contradictions in evidence")
-    use_llm: bool = Field(True, description="Generate LLM answer")
+    min_evidence_level: str = Field("LOW", description="Minimum GRADE evidence level (HIGH, MODERATE, LOW, VERY_LOW)")
+    use_pubmed_fallback: bool = Field(True, description="Enable PubMed search fallback")
+    verify_answer: bool = Field(True, description="Verify answer with BiomedNLI")
     
     @field_validator('query')
     def validate_query(cls, v):
         if not v.strip():
             raise ValueError("Query cannot be empty")
         return v.strip()
+    
+    @field_validator('min_evidence_level')
+    def validate_evidence_level(cls, v):
+        valid_levels = ["HIGH", "MODERATE", "LOW", "VERY_LOW"]
+        if v not in valid_levels:
+            raise ValueError(f"Evidence level must be one of {valid_levels}")
+        return v
 
 class DDXRequest(BaseModel):
     query: str = Field(..., min_length=10, max_length=500)
     top_k: int = Field(10, ge=1, le=50)
-    threshold: float = Field(0.5, ge=0.0, le=1.0)
     num_diagnoses: int = Field(5, ge=1, le=20, description="Number of differential diagnoses to return")
 
 # Response Models
-class GateResult(BaseModel):
-    gate_name: str
-    passed: bool
-    score: float
-    threshold: float
-    reason: Optional[str] = None
-
 class EvidencePassage(BaseModel):
+    index: int
     text: str
     metadata: Dict[str, Any]
-    similarity: float
-    energy: float
-    confidence_level: str  # "HIGH", "MEDIUM", "LOW"
+    evidence_level: str  # "HIGH", "MODERATE", "LOW", "VERY_LOW", "UNKNOWN"
+    study_design: str  # Study design type
 
 class Contradiction(BaseModel):
-    passage1_idx: int
-    passage2_idx: int
-    severity: str  # "critical", "moderate", "minor"
+    type: str  # "statistical", "directional"
+    source_1: str
+    source_2: str
+    severity: str  # "high", "moderate", "minor"
     explanation: str
 
-class EvidenceVerification(BaseModel):
-    sentence: str
+class VerificationClaim(BaseModel):
+    claim: str
     verified: bool
     confidence: float
-    citations: List[int]
+    supporting_evidence: Optional[str] = None
+    evidence_quality: Optional[str] = None
+
+class ClaimVerification(BaseModel):
+    verified: bool
+    total_claims: int
+    verified_claims: int
+    verification_rate: float
+    unverified_count: int
+    claims: List[VerificationClaim] = []
+
+class ConfidenceScore(BaseModel):
+    label: str  # "HIGH", "MODERATE", "LOW", "VERY_LOW"
+    score: float  # 0.0-1.0
+    components: Optional[Dict[str, float]] = None
+
+class EvidenceSummary(BaseModel):
+    total_retrieved: int
+    high_quality_count: int
+    grade_distribution: Dict[str, int]
+    study_types: Dict[str, int]
 
 class QueryResponse(BaseModel):
     query: str
-    gate_status: str  # "accepted", "rejected", "bypassed"
-    gates: List[GateResult]
+    status: str  # "success", "rejected"
     answer: Optional[str] = None
-    follow_up_questions: Optional[List[str]] = None
-    confidence: str  # "high", "medium", "low", "rejected"
+    confidence: Optional[ConfidenceScore] = None
     
     # Evidence
-    evidence_count: int
-    evidence_passages: List[EvidencePassage]
+    evidence_summary: Optional[EvidenceSummary] = None
+    evidence_count: int = 0
+    evidence_passages: List[EvidencePassage] = []
+    sources: str = ""
     
     # Verification
-    evidence_chain: Optional[Dict[str, Any]] = None
-    verification_rate: Optional[float] = None
+    verification: Optional[ClaimVerification] = None
     
     # Contradictions
     contradictions: Optional[List[Contradiction]] = None
     has_contradictions: bool = False
     
     # Metadata
-    response_time_ms: float
-    cache_hit: bool
-    warnings: List[str] = []
+    response_time_ms: Optional[float] = None
+    reason: Optional[str] = None
+    suggestion: Optional[str] = None
 
 class DDXResponse(BaseModel):
     query: str
-    diagnoses: List[Dict[str, Any]]
+    status: str
+    answer: Optional[str] = None
+    confidence: Optional[ConfidenceScore] = None
+    evidence_summary: EvidenceSummary
+    evidence_count: int
     response_time_ms: float
 
 class HealthResponse(BaseModel):
